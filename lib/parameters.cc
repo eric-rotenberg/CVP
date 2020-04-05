@@ -26,6 +26,7 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 bool VP_ENABLE = false;
 bool VP_PERFECT = false;
+uint64_t VP_TRACK = 0;
 uint64_t WINDOW_SIZE = 256;
 uint64_t FETCH_WIDTH = 16;
 uint64_t FETCH_NUM_BRANCH = 0;		// 0: unlimited; >0: finite

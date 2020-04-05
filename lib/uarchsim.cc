@@ -72,6 +72,27 @@ uarchsim_t::~uarchsim_t() {
 
 #define MAX(a, b) (((a) > (b)) ? (a) : (b))
 
+bool uarchsim_t::is_candidate_for_track(db_t *inst)
+{
+   switch(VPTracks(VP_TRACK)){
+   case VPTracks::ALL:
+         return true;
+   case VPTracks::LoadsOnly:
+         return inst->is_load;
+   case VPTracks::LoadsOnlyWPerfCache:
+         //Assumed that we have already asserted PERFECT_CACHE is set
+         return inst->is_load;
+   case VPTracks::L1DHitLoadsOnly:
+         return inst->is_load; //&& inst->is_l1d_hit;
+   case VPTracks::L1DMissLoadsOnly:
+         return inst->is_load; //&& inst->is_l1d_miss;
+   default:
+         assert(true && "Invalid Track\n");
+   }
+   assert(true && "Invalid Track\n");
+   return false;
+}
+
 void uarchsim_t::step(db_t *inst) {
 //   inst->printInst();
 //  return;
@@ -99,19 +120,23 @@ void uarchsim_t::step(db_t *inst) {
    bool speculate;
    bool squash = false;
    uint64_t latency;
-   if (VP_ENABLE) {
-      if (VP_PERFECT) {
-	 predicted_value = inst->D.value;
+   if (VP_ENABLE)
+   {
+      if (VP_PERFECT)
+      {
+         predicted_value = inst->D.value;
          speculate = predictable;
       }
-      else {
-	 speculate = getPrediction(seq_no, inst->pc, piece, predicted_value);
-	 speculativeUpdate(seq_no, predictable, ((predictable && speculate) ? ((predicted_value == inst->D.value) ? 1 : 0) : 2),
-		           inst->pc, inst->next_pc, (InstClass) inst->insn, piece,
-   		           (inst->A.valid ? inst->A.log_reg : 0xDEADBEEF),
-   		           (inst->B.valid ? inst->B.log_reg : 0xDEADBEEF),
-   		           (inst->C.valid ? inst->C.log_reg : 0xDEADBEEF),
-   		           (inst->D.valid ? inst->D.log_reg : 0xDEADBEEF));
+      else
+      {
+         const bool is_candidate = is_candidate_for_track(inst);
+         speculate = getPrediction(seq_no, inst->pc, piece, predicted_value, is_candidate);
+         speculativeUpdate(seq_no, predictable, ((predictable && speculate && is_candidate) ? ((predicted_value == inst->D.value) ? 1 : 0) : 2),
+                           inst->pc, inst->next_pc, (InstClass)inst->insn, piece,
+                           (inst->A.valid ? inst->A.log_reg : 0xDEADBEEF),
+                           (inst->B.valid ? inst->B.log_reg : 0xDEADBEEF),
+                           (inst->C.valid ? inst->C.log_reg : 0xDEADBEEF),
+                           (inst->D.valid ? inst->D.log_reg : 0xDEADBEEF));
       }
    }
    else {
@@ -316,9 +341,21 @@ void uarchsim_t::step(db_t *inst) {
 #define SCALED_UNIT(size)	((size/KILOBYTE >= KILOBYTE) ? "MB" : "KB")
 
 void uarchsim_t::output() {
-   printf("UARCHSIM CONFIGURATION-----------------------------\n");
+   auto get_track_name = [] (uint64_t track){
+      static std::string track_names [] = {
+         "ALL",
+         "LoadsOnly",
+         "LoadsOnlyWPerfCache",
+         "L1DHitLoadsOnly",
+         "L1DMissLoadsOnly",
+      };
+      //return track_names[static_cast<std::underlying_type<VPTracks>::type>(t)].c_str();
+      return track_names[track].c_str();
+   };
+
    printf("VP_ENABLE = %d\n", (VP_ENABLE ? 1 : 0));
    printf("VP_PERFECT = %s\n", (VP_ENABLE ? (VP_PERFECT ? "1" : "0") : "n/a"));
+   printf("VP_TRACK = %s\n", (VP_ENABLE ? get_track_name(VP_TRACK) : "n/a"));
    printf("WINDOW_SIZE = %ld\n", WINDOW_SIZE);
    printf("FETCH_WIDTH = %ld\n", FETCH_WIDTH);
    printf("FETCH_NUM_BRANCH = %ld\n", FETCH_NUM_BRANCH);

@@ -48,7 +48,6 @@ enum InstClass : uint8_t
   undefInstClass = 8 
 };
 
-
 //
 // getPrediction()
 //
@@ -71,7 +70,7 @@ enum InstClass : uint8_t
 // 1. predicted value, whether or not the simulator is directed to speculate
 //
 extern
-bool getPrediction(uint64_t seq_no, uint64_t pc, uint8_t piece, uint64_t& predicted_value);
+bool getPrediction(uint64_t seq_no, uint64_t pc, uint8_t piece, uint64_t& predicted_value, bool is_candidate=true);
 
 //
 // speculativeUpdate()

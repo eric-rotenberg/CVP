@@ -21,9 +21,19 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 // Author: Eric Rotenberg (ericro@ncsu.edu)
 
+enum class VPTracks
+{
+    ALL  = 0,
+    LoadsOnly,
+    LoadsOnlyWPerfCache,
+    L1DHitLoadsOnly,
+    L1DMissLoadsOnly,
+    NumTracks
+};
 
 extern bool VP_ENABLE;
 extern bool VP_PERFECT;
+extern uint64_t VP_TRACK;
 extern uint64_t WINDOW_SIZE;
 extern uint64_t FETCH_WIDTH;
 extern uint64_t FETCH_NUM_BRANCH;

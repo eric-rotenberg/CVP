@@ -97,6 +97,7 @@ class uarchsim_t {
       //void set_funcsim(processor_t *funcsim);
       void step(db_t *inst);
       void output();
+      bool is_candidate_for_track(db_t *inst);
 };
 
 #endif
