@@ -29,13 +29,18 @@ FLAGS = -std=c++11 -L./lib $(LIBS) $(OPT)
 OBJ = mypredictor.o
 DEPS = cvp.h mypredictor.h
 
+DEBUG=0
+ifeq ($(DEBUG), 1)
+	CC += -g
+endif
+
 
 .PHONY: clean lib
 
 all: cvp
 
 lib:
-	make -C $@
+	make -C $@ DEBUG=$(DEBUG)
 
 cvp: $(OBJ) | lib
 	$(CC) $(FLAGS) -o $@ $^
