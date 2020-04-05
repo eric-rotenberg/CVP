@@ -29,15 +29,21 @@ FLAGS = -std=c++11 -L./lib $(LIBS) $(OPT)
 OBJ = mypredictor.o
 DEPS = cvp.h mypredictor.h
 
+
+.PHONY: clean lib
+
 all: cvp
 
-cvp: $(OBJ)
+lib:
+	make -C $@
+
+cvp: $(OBJ) | lib
 	$(CC) $(FLAGS) -o $@ $^
 
 %.o: %.cc $(DEPS)
 	$(CC) $(FLAGS) -c -o $@ $<
 
-.PHONY: clean
 
 clean:
 	rm -f *.o cvp
+	make -C lib clean
