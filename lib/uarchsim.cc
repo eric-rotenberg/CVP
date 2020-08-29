@@ -79,13 +79,8 @@ bool uarchsim_t::is_candidate_for_track(db_t *inst)
          return true;
    case VPTracks::LoadsOnly:
          return inst->is_load;
-   case VPTracks::LoadsOnlyWPerfCache:
-         //Assumed that we have already asserted PERFECT_CACHE is set
+   case VPTracks::LoadsOnlyHitMiss:
          return inst->is_load;
-   case VPTracks::L1DHitLoadsOnly:
-         return inst->is_load; //&& inst->is_l1d_hit;
-   case VPTracks::L1DMissLoadsOnly:
-         return inst->is_load; //&& inst->is_l1d_miss;
    default:
          assert(true && "Invalid Track\n");
    }
@@ -345,9 +340,7 @@ void uarchsim_t::output() {
       static std::string track_names [] = {
          "ALL",
          "LoadsOnly",
-         "LoadsOnlyWPerfCache",
-         "L1DHitLoadsOnly",
-         "L1DMissLoadsOnly",
+         "LoadsOnlyHitMiss",
       };
       //return track_names[static_cast<std::underlying_type<VPTracks>::type>(t)].c_str();
       return track_names[track].c_str();

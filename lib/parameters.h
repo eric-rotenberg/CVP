@@ -25,9 +25,7 @@ enum class VPTracks
 {
     ALL  = 0,
     LoadsOnly,
-    LoadsOnlyWPerfCache,
-    L1DHitLoadsOnly,
-    L1DMissLoadsOnly,
+    LoadsOnlyHitMiss,
     NumTracks
 };
 

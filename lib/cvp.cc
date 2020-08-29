@@ -245,11 +245,6 @@ int parseargs(int argc, char ** argv) {
   }
 
   if (i < argc) {
-     //Enfore perfect_cache if VPTrack == LoadsOnlyWPerfCache
-     if(VPTracks(VP_TRACK) == VPTracks::LoadsOnlyWPerfCache){
-        printf("Enabling PERFECT_CACHE\n");
-        PERFECT_CACHE=true;
-     }
      return(i);
   }
   else {
