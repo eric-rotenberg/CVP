@@ -23,7 +23,7 @@
 
 CC = g++
 OPT = -O3
-LIBS = -lz -lcvp
+LIBS = -lcvp -lz
 FLAGS = -std=c++11 -L./lib $(LIBS) $(OPT)
 
 OBJ = mypredictor.o
