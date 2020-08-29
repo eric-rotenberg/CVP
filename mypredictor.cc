@@ -23,15 +23,20 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 
 #include <stdio.h>
+#include <iostream>
 #include <inttypes.h>
 #include "cvp.h"
 #include "mypredictor.h"
 
 
-bool getPrediction(uint64_t seq_no, uint64_t pc, uint8_t piece, uint64_t& predicted_value, bool is_candidate) {
+PredictionResult getPrediction(const PredictionRequest req)
+{
    // super sophisticated value predictor: always-predict-0 value predictor
-   predicted_value = 0;
-   return(true);
+   PredictionResult result;
+   result.predicted_value = 0;
+   result.speculate = true;
+//    std::cout << "ID " << req.seq_no << " PC " << req.pc << " isCandidate " << req.is_candidate << " CacheHit " << req.cache_hit  << std::endl;
+   return result;
 }
 
 void speculativeUpdate(uint64_t seq_no,    		// dynamic micro-instruction # (starts at 0 and increments indefinitely)

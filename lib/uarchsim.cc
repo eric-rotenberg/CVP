@@ -72,21 +72,32 @@ uarchsim_t::~uarchsim_t() {
 
 #define MAX(a, b) (((a) > (b)) ? (a) : (b))
 
-bool uarchsim_t::is_candidate_for_track(db_t *inst)
+PredictionRequest uarchsim_t::get_prediction_req_for_track(uint64_t seq_no, uint8_t piece, db_t *inst)
 {
+   PredictionRequest req;
+   req.seq_no = seq_no;
+   req.pc = inst->pc;
+   req.piece = piece;
+   req.cache_hit = false;
+
    switch(VPTracks(VP_TRACK)){
    case VPTracks::ALL:
-         return true;
+         req.is_candidate = true;
+         break;
    case VPTracks::LoadsOnly:
-         return inst->is_load;
+         req.is_candidate = inst->is_load;
+         break;
    case VPTracks::LoadsOnlyHitMiss:
-         return inst->is_load;
+         req.is_candidate = inst->is_load;
+         req.cache_hit = L1.is_hit(inst->addr);
+         break;
    default:
          assert(true && "Invalid Track\n");
    }
    assert(true && "Invalid Track\n");
-   return false;
+   return req;
 }
+
 
 void uarchsim_t::step(db_t *inst) {
 //   inst->printInst();
@@ -111,22 +122,21 @@ void uarchsim_t::step(db_t *inst) {
    // CVP variables
    uint64_t seq_no = num_inst;
    bool predictable = (inst->D.valid && (inst->D.log_reg != RFFLAGS));
-   uint64_t predicted_value;
-   bool speculate;
+   PredictionResult pred;
    bool squash = false;
    uint64_t latency;
    if (VP_ENABLE)
    {
       if (VP_PERFECT)
       {
-         predicted_value = inst->D.value;
-         speculate = predictable;
+         pred.predicted_value = inst->D.value;
+         pred.speculate = predictable;
       }
       else
       {
-         const bool is_candidate = is_candidate_for_track(inst);
-         speculate = getPrediction(seq_no, inst->pc, piece, predicted_value, is_candidate);
-         speculativeUpdate(seq_no, predictable, ((predictable && speculate && is_candidate) ? ((predicted_value == inst->D.value) ? 1 : 0) : 2),
+         PredictionRequest req = get_prediction_req_for_track(seq_no, piece, inst);
+         pred = getPrediction(req);
+         speculativeUpdate(seq_no, predictable, ((predictable && pred.speculate && req.is_candidate) ? ((pred.predicted_value == inst->D.value) ? 1 : 0) : 2),
                            inst->pc, inst->next_pc, (InstClass)inst->insn, piece,
                            (inst->A.valid ? inst->A.log_reg : 0xDEADBEEF),
                            (inst->B.valid ? inst->B.log_reg : 0xDEADBEEF),
@@ -135,7 +145,7 @@ void uarchsim_t::step(db_t *inst) {
       }
    }
    else {
-      speculate = false;
+      pred.speculate = false;
    }
  
    // 
@@ -233,8 +243,8 @@ void uarchsim_t::step(db_t *inst) {
    if (inst->D.valid) {
       assert(inst->D.log_reg < RFSIZE);
       if (inst->D.log_reg != RFFLAGS) {
-	 squash = (speculate && (predicted_value != inst->D.value));
-         RF[inst->D.log_reg] = ((speculate && (predicted_value == inst->D.value)) ? fetch_cycle : exec_cycle);
+	 squash = (pred.speculate && (pred.predicted_value != inst->D.value));
+         RF[inst->D.log_reg] = ((pred.speculate && (pred.predicted_value == inst->D.value)) ? fetch_cycle : exec_cycle);
       }
    }
 
@@ -256,8 +266,8 @@ void uarchsim_t::step(db_t *inst) {
 
    // CVP measurements
    num_eligible += (predictable ? 1 : 0);
-   num_correct += ((predictable && speculate && !squash) ? 1 : 0);
-   num_incorrect += ((predictable && speculate && squash) ? 1 : 0);
+   num_correct += ((predictable && pred.speculate && !squash) ? 1 : 0);
+   num_incorrect += ((predictable && pred.speculate && squash) ? 1 : 0);
 
    /////////////////////////////
    // Manage window: dispatch.
@@ -362,8 +372,8 @@ void uarchsim_t::output() {
    printf("NUM_ALU_LANES = %ld%s", NUM_ALU_LANES, ((NUM_ALU_LANES > 0) ? "\n" : " (unbounded)\n"));
    //BP.output();
    printf("MEMORY HIERARCHY CONFIGURATION---------------------\n");
-   printf("PERFECT_CACHE = %ld\n", (PERFECT_CACHE ? 1 : 0));
-   printf("WRITE_ALLOCATE = %ld\n", (WRITE_ALLOCATE ? 1 : 0));
+   printf("PERFECT_CACHE = %s\n", (PERFECT_CACHE ? "1" : "0"));
+   printf("WRITE_ALLOCATE = %s\n", (WRITE_ALLOCATE ? "1" : "0"));
    printf("Within-pipeline factors:\n");
    printf("\tAGEN latency = 1 cycle\n");
    printf("\tStore Queue (SQ): SQ size = window size, oracle memory disambiguation, store-load forwarding = 1 cycle after store's or load's agen.\n");

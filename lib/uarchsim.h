@@ -23,6 +23,7 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 
 #include <map>
+#include "cvp.h"
 using namespace std;
 
 #ifndef _RISCV_UARCHSIM_H
@@ -97,7 +98,7 @@ class uarchsim_t {
       //void set_funcsim(processor_t *funcsim);
       void step(db_t *inst);
       void output();
-      bool is_candidate_for_track(db_t *inst);
+      PredictionRequest get_prediction_req_for_track(uint64_t seq_no, uint8_t piece, db_t *inst);
 };
 
 #endif

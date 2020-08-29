@@ -62,6 +62,19 @@ cache_t::cache_t(uint64_t size, uint64_t assoc, uint64_t blocksize, uint64_t lat
 cache_t::~cache_t() {
 }
 
+bool cache_t::is_hit(uint64_t addr) const {
+   uint64_t tag = TAG(addr);
+   uint64_t index = INDEX(addr);
+
+   for (uint64_t way = 0; way < assoc; way++) {
+      if (C[index][way].valid && (C[index][way].tag == tag)) {
+         return true; 
+      }
+   }
+
+   return false;
+}
+
 uint64_t cache_t::access(uint64_t cycle, bool read, uint64_t addr) {
    uint64_t avail;		// return value: cycle that requested block is available
    uint64_t tag = TAG(addr);
@@ -73,14 +86,17 @@ uint64_t cache_t::access(uint64_t cycle, bool read, uint64_t addr) {
 
    accesses++;
 
-   for (way = 0; way < assoc; way++) {
-      if (C[index][way].valid && (C[index][way].tag == tag)) {
+   for (way = 0; way < assoc; way++)
+   {
+      if (C[index][way].valid && (C[index][way].tag == tag))
+      {
          hit = true;
-	 break;
+         break;
       }
-      else if (C[index][way].lru >= max_lru_ctr) {
+      else if (C[index][way].lru >= max_lru_ctr)
+      {
          max_lru_ctr = C[index][way].lru;
-	 victim_way = way;
+         victim_way = way;
       }
    }
 

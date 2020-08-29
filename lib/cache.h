@@ -59,5 +59,6 @@ public:
 	cache_t(uint64_t size, uint64_t assoc, uint64_t blocksize, uint64_t latency, cache_t *next_level);
 	~cache_t();
 	uint64_t access(uint64_t cycle, bool read, uint64_t addr);
+    bool is_hit(uint64_t addr) const;
 	void stats();
 };
