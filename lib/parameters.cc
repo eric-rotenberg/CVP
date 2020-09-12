@@ -50,7 +50,7 @@ uint64_t IC_BLOCKSIZE = 64;
 uint64_t L1_SIZE = (1 << 15);
 uint64_t L1_ASSOC = 4;
 uint64_t L1_BLOCKSIZE = 64;
-uint64_t L1_LATENCY = 2;
+uint64_t L1_LATENCY = 3;
 
 uint64_t L2_SIZE = (1 << 20);
 uint64_t L2_ASSOC = 8;
