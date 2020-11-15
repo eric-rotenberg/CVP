@@ -26,30 +26,32 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 bool VP_ENABLE = false;
 bool VP_PERFECT = false;
-uint64_t WINDOW_SIZE = 256;
+uint64_t VP_TRACK = 0;
+uint64_t WINDOW_SIZE = 512;
 uint64_t FETCH_WIDTH = 16;
-uint64_t FETCH_NUM_BRANCH = 0;		// 0: unlimited; >0: finite
-bool FETCH_STOP_AT_INDIRECT = false;
-bool FETCH_STOP_AT_TAKEN = false;
-bool FETCH_MODEL_ICACHE = false;
+uint64_t FETCH_NUM_BRANCH = 16;		// 0: unlimited; >0: finite
+bool FETCH_STOP_AT_INDIRECT = true;
+bool FETCH_STOP_AT_TAKEN = true;
+bool FETCH_MODEL_ICACHE = true;
 
 bool PERFECT_BRANCH_PRED = false;
 bool PERFECT_INDIRECT_PRED = false;
 uint64_t PIPELINE_FILL_LATENCY = 5;
-uint64_t NUM_LDST_LANES = 0;
-uint64_t NUM_ALU_LANES = 0;
+uint64_t NUM_LDST_LANES = 8;
+uint64_t NUM_ALU_LANES = 16;
 
+bool PREFETCHER_ENABLE = true;
 bool PERFECT_CACHE = false;
 bool WRITE_ALLOCATE = true;
 
-uint64_t IC_SIZE = (1 << 16);
-uint64_t IC_ASSOC = 4;
+uint64_t IC_SIZE = (1 << 17);
+uint64_t IC_ASSOC = 8;
 uint64_t IC_BLOCKSIZE = 64;
 
-uint64_t L1_SIZE = (1 << 15);
-uint64_t L1_ASSOC = 4;
+uint64_t L1_SIZE = (1 << 16);
+uint64_t L1_ASSOC = 8;
 uint64_t L1_BLOCKSIZE = 64;
-uint64_t L1_LATENCY = 2;
+uint64_t L1_LATENCY = 3;
 
 uint64_t L2_SIZE = (1 << 20);
 uint64_t L2_ASSOC = 8;

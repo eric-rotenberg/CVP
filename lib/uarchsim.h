@@ -23,6 +23,10 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 
 #include <map>
+#include "spdlog/spdlog.h"
+#include "spdlog/fmt/ostr.h"
+#include "cvp.h"
+#include "stride_prefetcher.h"
 using namespace std;
 
 #ifndef _RISCV_UARCHSIM_H
@@ -63,6 +67,7 @@ class uarchsim_t {
 
       // fetch timestamp
       uint64_t fetch_cycle;
+      uint64_t previous_fetch_cycle = 0;
    
       // Modeling resources: (1) finite fetch bundle, (2) finite window, and (3) finite execution lanes.
       uint64_t num_fetched;
@@ -77,6 +82,8 @@ class uarchsim_t {
       // Instruction cache.
       cache_t IC;
 
+      //Prefetcher
+      StridePrefetcher prefetcher;
       // Instruction and cycle counts for IPC.
       uint64_t num_inst;
       uint64_t cycle;
@@ -90,6 +97,11 @@ class uarchsim_t {
       uint64_t num_load;
       uint64_t num_load_sqmiss;
 
+      uint64_t stat_pfs_issued_to_mem = 0;
+
+      // Helper for oracle hit/miss information
+      uint64_t get_load_exec_cycle(db_t *inst) const;
+
    public:
       uarchsim_t();
       ~uarchsim_t();
@@ -97,6 +109,7 @@ class uarchsim_t {
       //void set_funcsim(processor_t *funcsim);
       void step(db_t *inst);
       void output();
+      PredictionRequest get_prediction_req_for_track(uint64_t cycle, uint64_t seq_no, uint8_t piece, db_t *inst);
 };
 
 #endif

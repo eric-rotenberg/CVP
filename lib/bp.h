@@ -20,56 +20,10 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
 // Author: Eric Rotenberg (ericro@ncsu.edu)
+// Modified by A. Seznec (andre.seznec@inria.fr) to include TAGE-SC-L predictor and the ITTAGE indirect branch predictor
 
-
-class gshare_index_t {
-private:
-	// Global branch history register.
-	uint64_t bhr;		// current state of global branch history register
-	uint64_t bhr_msb;	// used to set the msb of the bhr
-
-	// Parameters for index generation.
-	uint64_t pc_mask;
-	uint64_t bhr_shamt;
-
-	// User can query what its predictor size should be.
-	uint64_t size;
-
-public:
-	gshare_index_t(uint64_t pc_length, uint64_t bhr_length) {
-	   // Global branch history register.
-	   bhr = 0;
-	   bhr_msb = (1 << (bhr_length - 1));
-
-	   // Parameters for index generation.
-	   pc_mask = ((1 << pc_length) - 1);
-	   if (pc_length > bhr_length) {
-	      bhr_shamt = (pc_length - bhr_length);
-	      size = (1 << pc_length);
-	   }
-	   else {
-	      bhr_shamt = 0;
-	      size = (1 << bhr_length);
-	   }
-	}
-
-	~gshare_index_t() {
-	}
-
-	uint64_t table_size() {
-	   return(size);
-	}
-
-	// Function to generate gshare index.
-	inline uint64_t index(uint64_t pc) {
-	   return( ((pc >> 2) & pc_mask) ^ (bhr << bhr_shamt) );
-	}
-
-	// Function to update bhr.
-	inline void update_bhr(bool taken) {
-	   bhr = ((bhr >> 1) | (taken ? bhr_msb : 0));
-	}
-};
+#include "tage_sc_l.h"
+#include "ittage.h"
 
 class ras_t {
 private:
@@ -102,13 +56,11 @@ public:
 
 class bp_t {
 private:
-	// Gshare predictor for conditional branches.
-	uint64_t *cb;
-	gshare_index_t cb_index;
+    // Conditional branch predictor based on CBP-5 TAGE-SC-L
+    PREDICTOR *TAGESCL;
 
-	// Gshare predictor for indirect branches.
-	uint64_t *ib;
-	gshare_index_t ib_index;
+	// Indirect target predictor based on ITTAGE
+    IPREDICTOR *ITTAGE;
 
 	// Return address stack for predicting return targets.
 	ras_t ras;
@@ -140,3 +92,4 @@ public:
 	// Output all branch prediction measurements.
 	void output();
 };
+

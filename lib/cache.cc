@@ -62,7 +62,21 @@ cache_t::cache_t(uint64_t size, uint64_t assoc, uint64_t blocksize, uint64_t lat
 cache_t::~cache_t() {
 }
 
-uint64_t cache_t::access(uint64_t cycle, bool read, uint64_t addr) {
+bool cache_t::is_hit(uint64_t cycle, uint64_t addr) const {
+   uint64_t tag = TAG(addr);
+   uint64_t index = INDEX(addr);
+
+   for (uint64_t way = 0; way < assoc; way++) {
+      if (C[index][way].valid && (C[index][way].tag == tag)) {
+         auto avail = ((C[index][way].timestamp > (cycle + latency)) ? C[index][way].timestamp : (cycle + latency));
+         return (cycle + latency >= avail);
+      }
+   }
+
+   return false;
+}
+
+uint64_t cache_t::access(uint64_t cycle, bool read, uint64_t addr, bool pf) {
    uint64_t avail;		// return value: cycle that requested block is available
    uint64_t tag = TAG(addr);
    uint64_t index = INDEX(addr);
@@ -71,16 +85,20 @@ uint64_t cache_t::access(uint64_t cycle, bool read, uint64_t addr) {
    uint64_t max_lru_ctr = 0;	// for finding lru block
    uint64_t victim_way;		// if miss, this is the lru/victim way
 
-   accesses++;
+   accesses+=!pf;
+   pf_accesses += pf;
 
-   for (way = 0; way < assoc; way++) {
-      if (C[index][way].valid && (C[index][way].tag == tag)) {
+   for (way = 0; way < assoc; way++)
+   {
+      if (C[index][way].valid && (C[index][way].tag == tag))
+      {
          hit = true;
-	 break;
+         break;
       }
-      else if (C[index][way].lru >= max_lru_ctr) {
+      else if (C[index][way].lru >= max_lru_ctr)
+      {
          max_lru_ctr = C[index][way].lru;
-	 victim_way = way;
+         victim_way = way;
       }
    }
 
@@ -91,7 +109,8 @@ uint64_t cache_t::access(uint64_t cycle, bool read, uint64_t addr) {
       update_lru(index, way);	// make "way" the MRU way
    }
    else {	// miss
-      misses++;
+      misses+= !pf;
+      pf_misses += pf;
 
       assert(max_lru_ctr == (assoc - 1));
       assert(victim_way < assoc);
@@ -99,7 +118,7 @@ uint64_t cache_t::access(uint64_t cycle, bool read, uint64_t addr) {
       // TO DO: model writebacks (evictions of dirty blocks)
 
       // determine when the requested block will be available
-      avail = (next_level ? next_level->access((cycle + latency), read, addr) : (cycle + latency + MAIN_MEMORY_LATENCY));
+      avail = (next_level ? next_level->access((cycle + latency), read, addr, pf) : (cycle + latency + MAIN_MEMORY_LATENCY));
 
       // replace the victim block with the requested block
       C[index][victim_way].valid = true;
@@ -125,4 +144,7 @@ void cache_t::stats() {
    printf("\taccesses   = %lu\n", accesses);
    printf("\tmisses     = %lu\n", misses);
    printf("\tmiss ratio = %.2f%%\n", 100.0*((double)misses/(double)accesses));
+   printf("\tpf accesses   = %lu\n", pf_accesses);
+   printf("\tpf misses     = %lu\n", pf_misses);
+   printf("\tpf miss ratio = %.2f%%\n", 100.0*((double)pf_misses/(double)pf_accesses));
 }
