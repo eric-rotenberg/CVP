@@ -51,13 +51,16 @@ private:
 
 	// measurements
 	uint64_t accesses;
+	uint64_t pf_accesses;
 	uint64_t misses;
+	uint64_t pf_misses;
 
 	void update_lru(uint64_t index, uint64_t mru_way);
 
 public:
 	cache_t(uint64_t size, uint64_t assoc, uint64_t blocksize, uint64_t latency, cache_t *next_level);
 	~cache_t();
-	uint64_t access(uint64_t cycle, bool read, uint64_t addr);
+	uint64_t access(uint64_t cycle, bool read, uint64_t addr, bool pf = false);
+    bool is_hit(uint64_t cycle, uint64_t addr) const;
 	void stats();
 };

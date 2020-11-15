@@ -25,6 +25,8 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #define SCHED_DEPTH_INCREMENT 256
 #define MOD_S(x,y)		((x) & ((y)-1))
 
+constexpr uint64_t MAX_CYCLE = ~0lu;
+
 class resource_schedule {
 private:
    uint64_t *sched;
@@ -38,6 +40,7 @@ private:
 public:
    resource_schedule(uint64_t width);
    ~resource_schedule();
-   uint64_t schedule(uint64_t try_cycle);
+   uint64_t schedule(uint64_t start_cycle, uint64_t max_delta = MAX_CYCLE);
+   uint64_t try_schedule(uint64_t try_cycle);
    void advance_base_cycle(uint64_t new_base_cycle);
 };

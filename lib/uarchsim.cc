@@ -44,6 +44,11 @@ uarchsim_t::uarchsim_t():BP(20,16,20,16,64),window(WINDOW_SIZE),
    assert(WINDOW_SIZE);
    //assert(FETCH_WIDTH);
 
+   //setup logger
+   // Set this to "spdlog::level::debug" for verbose debug prints
+   spdlog::set_level(spdlog::level::info);
+   spdlog::set_pattern("[%l]  %v");
+
    ldst_lanes = ((NUM_LDST_LANES > 0) ? (new resource_schedule(NUM_LDST_LANES)) : ((resource_schedule *)NULL));
    alu_lanes = ((NUM_ALU_LANES > 0) ? (new resource_schedule(NUM_ALU_LANES)) : ((resource_schedule *)NULL));
 
@@ -71,10 +76,85 @@ uarchsim_t::~uarchsim_t() {
 }
 
 #define MAX(a, b) (((a) > (b)) ? (a) : (b))
+#define MIN(a, b) (((a) > (b)) ? (b) : (a))
 
-void uarchsim_t::step(db_t *inst) {
-//   inst->printInst();
-//  return;
+PredictionRequest uarchsim_t::get_prediction_req_for_track(uint64_t cycle, uint64_t seq_no, uint8_t piece, db_t *inst)
+{
+   PredictionRequest req;
+   req.seq_no = seq_no;
+   req.pc = inst->pc;
+   req.piece = piece;
+   req.cache_hit = HitMissInfo::Invalid;
+
+
+   switch(VPTracks(VP_TRACK)){
+   case VPTracks::ALL:
+         req.is_candidate = true;
+         break;
+   case VPTracks::LoadsOnly:
+         req.is_candidate = inst->is_load;
+         break;
+   case VPTracks::LoadsOnlyHitMiss:
+   {
+         req.is_candidate = inst->is_load;
+     
+         if(req.is_candidate)
+         {
+            req.cache_hit = HitMissInfo::Miss;
+            uint64_t exec_cycle = get_load_exec_cycle(inst);
+            if(L1.is_hit(exec_cycle, inst->addr))
+            {
+               req.cache_hit = HitMissInfo::L1DHit;
+            }
+            else if(L2.is_hit(exec_cycle, inst->addr))
+            {
+               req.cache_hit = HitMissInfo::L2Hit;
+            }
+            else if(L3.is_hit(exec_cycle, inst->addr))
+            {
+               req.cache_hit = HitMissInfo::L3Hit;
+            }
+         }
+         break;
+   }
+   default:
+         assert(false && "Invalid Track\n");
+         break;
+   }
+   return req;
+}
+
+uint64_t uarchsim_t::get_load_exec_cycle(db_t *inst) const
+{
+   uint64_t exec_cycle = fetch_cycle;
+
+   // No need to re-access ICache because fetch_cycle has already been updated    
+   exec_cycle = exec_cycle + PIPELINE_FILL_LATENCY;
+
+   if (inst->A.valid) {
+      assert(inst->A.log_reg < RFSIZE);
+      exec_cycle = MAX(exec_cycle, RF[inst->A.log_reg]);
+   }
+   if (inst->B.valid) {
+      assert(inst->B.log_reg < RFSIZE);
+      exec_cycle = MAX(exec_cycle, RF[inst->B.log_reg]);
+   }
+   if (inst->C.valid) {
+      assert(inst->C.log_reg < RFSIZE);
+      exec_cycle = MAX(exec_cycle, RF[inst->C.log_reg]);
+   }
+
+   if (ldst_lanes) exec_cycle = ldst_lanes->try_schedule(exec_cycle);
+
+   // AGEN takes 1 cycle.
+   exec_cycle = (exec_cycle + 1);
+
+   return exec_cycle;
+}
+
+void uarchsim_t::step(db_t *inst) 
+{
+   spdlog::debug("Stepping, FC: {}",fetch_cycle);
 
    // Preliminary step: determine which piece of the instruction this is.
    static uint8_t piece = 0;
@@ -95,29 +175,9 @@ void uarchsim_t::step(db_t *inst) {
    // CVP variables
    uint64_t seq_no = num_inst;
    bool predictable = (inst->D.valid && (inst->D.log_reg != RFFLAGS));
-   uint64_t predicted_value;
-   bool speculate;
+   PredictionResult pred;
    bool squash = false;
    uint64_t latency;
-   if (VP_ENABLE) {
-      if (VP_PERFECT) {
-	 predicted_value = inst->D.value;
-         speculate = predictable;
-      }
-      else {
-	 speculate = getPrediction(seq_no, inst->pc, piece, predicted_value);
-	 speculativeUpdate(seq_no, predictable, ((predictable && speculate) ? ((predicted_value == inst->D.value) ? 1 : 0) : 2),
-		           inst->pc, inst->next_pc, (InstClass) inst->insn, piece,
-   		           (inst->A.valid ? inst->A.log_reg : 0xDEADBEEF),
-   		           (inst->B.valid ? inst->B.log_reg : 0xDEADBEEF),
-   		           (inst->C.valid ? inst->C.log_reg : 0xDEADBEEF),
-   		           (inst->D.valid ? inst->D.log_reg : 0xDEADBEEF));
-      }
-   }
-   else {
-      speculate = false;
-   }
- 
    // 
    // Schedule the instruction's execution cycle.
    //
@@ -128,6 +188,35 @@ void uarchsim_t::step(db_t *inst) {
    if (FETCH_MODEL_ICACHE)
       fetch_cycle = IC.access(fetch_cycle, true, inst->pc);   // Note: I-cache hit latency is "0" (above), so fetch cycle doesn't increase on hits.
 
+   // Predict at fetch time
+   if (VP_ENABLE)
+   {
+      if (VP_PERFECT)
+      {
+         PredictionRequest req = get_prediction_req_for_track(fetch_cycle, seq_no, piece, inst);
+         pred.predicted_value = inst->D.value;
+         pred.speculate = predictable && req.is_candidate;
+         predictable &= req.is_candidate;
+      }
+      else
+      {
+         PredictionRequest req = get_prediction_req_for_track(fetch_cycle, seq_no, piece, inst);
+         pred = getPrediction(req);
+         speculativeUpdate(seq_no, predictable, ((predictable && pred.speculate && req.is_candidate) ? ((pred.predicted_value == inst->D.value) ? 1 : 0) : 2),
+                           inst->pc, inst->next_pc, (InstClass)inst->insn, piece,
+                           (inst->A.valid ? inst->A.log_reg : 0xDEADBEEF),
+                           (inst->B.valid ? inst->B.log_reg : 0xDEADBEEF),
+                           (inst->C.valid ? inst->C.log_reg : 0xDEADBEEF),
+                           (inst->D.valid ? inst->D.log_reg : 0xDEADBEEF));
+         // Override any predictor attempting to predict an instruction that is not candidate.
+         pred.speculate &= req.is_candidate;
+         predictable &= req.is_candidate;
+      }
+   }
+   else {
+      pred.speculate = false;
+   }
+ 
    exec_cycle = fetch_cycle + PIPELINE_FILL_LATENCY;
 
    if (inst->A.valid) {
@@ -154,10 +243,24 @@ void uarchsim_t::step(db_t *inst) {
    }
 
    if (inst->is_load) {
+     
       latency = exec_cycle;	// record start of execution
 
       // AGEN takes 1 cycle.
       exec_cycle = (exec_cycle + 1);
+
+      // Train the prefetcher when the load finds out its outcome in the L1D
+      if (PREFETCHER_ENABLE)
+      {
+         // Generate prefetches ahead of time as in "Effective Hardware-Based Data Prefetching for High-Performance Processors"
+         // Instruction PC will be 4B aligned.
+         prefetcher.lookahead((inst->pc >> 2), fetch_cycle);
+
+         // Train the prefetcher 
+         const bool hit = L1.is_hit(exec_cycle, inst->addr);
+         PrefetchTrainingInfo info{inst->pc >> 2, inst->addr, 0, hit};
+         prefetcher.train(info);
+      }
 
       // Search D$ using AGEN's cycle.
       uint64_t data_cache_cycle;
@@ -172,14 +275,14 @@ void uarchsim_t::step(db_t *inst) {
       bool inc_sqmiss = false;
       uint64_t temp_cycle = 0;
       for (i = 0, addr = inst->addr; i < inst->size; i++, addr++) {
-	 if ((SQ.find(addr) != SQ.end()) && (exec_cycle < SQ[addr].ret_cycle)) {
-	    // SQ hit: the byte's timestamp is the later of load's execution cycle and store's execution cycle
-	    temp_cycle = MAX(temp_cycle, MAX(exec_cycle, SQ[addr].exec_cycle));
-	 }
-	 else {
-	    // SQ miss: the byte's timestamp is its availability in L1 D$
-	    temp_cycle = MAX(temp_cycle, data_cache_cycle);
-	    inc_sqmiss = true;
+         if ((SQ.find(addr) != SQ.end()) && (exec_cycle < SQ[addr].ret_cycle)) {
+            // SQ hit: the byte's timestamp is the later of load's execution cycle and store's execution cycle
+            temp_cycle = MAX(temp_cycle, MAX(exec_cycle, SQ[addr].exec_cycle));
+         }
+         else {
+            // SQ miss: the byte's timestamp is its availability in L1 D$
+            temp_cycle = MAX(temp_cycle, data_cache_cycle);
+            inc_sqmiss = true;
          }
       }
 
@@ -205,6 +308,48 @@ void uarchsim_t::step(db_t *inst) {
       exec_cycle += latency;
    }
 
+   // Drain prefetches from PF Queue
+   // The idea is that a prefetch can go only if there is a free LDST slot "this" cycle
+   // Here, "this" means all the cycles between the previous fetch cycle and the current one since all fetched ld/st will have been
+   // scheduled and prefetch can correctly "steal" ld/st slots.
+   if(PREFETCHER_ENABLE)
+   {
+      uint64_t tmp_previous_fetch_cycle;
+      Prefetch p;
+      bool issued;
+      while(prefetcher.issue(p, fetch_cycle))
+      {
+         tmp_previous_fetch_cycle = MAX(previous_fetch_cycle, p.cycle_generated);
+         issued = false;
+         while(tmp_previous_fetch_cycle <= fetch_cycle)
+         {
+            spdlog::debug("Issuing prefetch:{}", p);
+            uint64_t cycle_pf_exec = tmp_previous_fetch_cycle;
+
+            if(ldst_lanes) cycle_pf_exec = ldst_lanes->schedule(cycle_pf_exec, 0);
+
+            if(cycle_pf_exec != MAX_CYCLE)
+            {
+               L1.access(cycle_pf_exec, true, p.address, true);
+               ++stat_pfs_issued_to_mem;
+               issued = true;
+               break;
+            }
+            else
+            {
+               tmp_previous_fetch_cycle++;
+               spdlog::debug("Could not find empty LDST slot for PF this cycle, increasing");
+            }
+         }
+         
+         if(!issued)
+         {
+            prefetcher.put_back(p);
+            break;
+         }
+      }
+   }
+
    // Update the instruction count and simulation cycle (max. completion cycle among all scheduled instructions).
    num_inst += 1;
    cycle = MAX(cycle, exec_cycle);
@@ -212,9 +357,10 @@ void uarchsim_t::step(db_t *inst) {
    // Update destination register timestamp.
    if (inst->D.valid) {
       assert(inst->D.log_reg < RFSIZE);
-      if (inst->D.log_reg != RFFLAGS) {
-	 squash = (speculate && (predicted_value != inst->D.value));
-         RF[inst->D.log_reg] = ((speculate && (predicted_value == inst->D.value)) ? fetch_cycle : exec_cycle);
+      if (inst->D.log_reg != RFFLAGS) 
+      {
+         squash = (pred.speculate && (pred.predicted_value != inst->D.value));         
+         RF[inst->D.log_reg] = ((pred.speculate && (pred.predicted_value == inst->D.value)) ? fetch_cycle : exec_cycle);
       }
    }
 
@@ -236,8 +382,8 @@ void uarchsim_t::step(db_t *inst) {
 
    // CVP measurements
    num_eligible += (predictable ? 1 : 0);
-   num_correct += ((predictable && speculate && !squash) ? 1 : 0);
-   num_incorrect += ((predictable && speculate && squash) ? 1 : 0);
+   num_correct += ((predictable && pred.speculate && !squash) ? 1 : 0);
+   num_incorrect += ((predictable && pred.speculate && squash) ? 1 : 0);
 
    /////////////////////////////
    // Manage window: dispatch.
@@ -251,6 +397,8 @@ void uarchsim_t::step(db_t *inst) {
    /////////////////////////////
    // Manage fetch cycle.
    /////////////////////////////
+   previous_fetch_cycle = fetch_cycle;
+
    if (squash) {			// control dependency on the retire cycle of the value-mispredicted instruction
       num_fetched = 0;			// new fetch bundle
       assert(!window.empty() && (fetch_cycle < window.peektail().retire_cycle));
@@ -302,9 +450,12 @@ void uarchsim_t::step(db_t *inst) {
    if (!PERFECT_BRANCH_PRED && BP.predict((InstClass) inst->insn, inst->pc, inst->next_pc))
       fetch_cycle = MAX(fetch_cycle, exec_cycle);
 
+   spdlog::debug("Updating base_cycle to {}", MIN(fetch_cycle, prefetcher.get_oldest_pf_cycle()));
+
    // Attempt to advance the base cycles of resource schedules.
-   if (ldst_lanes) ldst_lanes->advance_base_cycle(fetch_cycle);
-   if (alu_lanes) alu_lanes->advance_base_cycle(fetch_cycle);
+   // Note : We may have some prefetches to issue still that are older than the fetch cycle.
+   if (ldst_lanes) ldst_lanes->advance_base_cycle(MIN(fetch_cycle, prefetcher.get_oldest_pf_cycle()));
+   if (alu_lanes) alu_lanes->advance_base_cycle(MIN(fetch_cycle, prefetcher.get_oldest_pf_cycle()));
 
    // DEBUG
    //printf("%d,%d\n", num_inst, cycle);
@@ -316,9 +467,18 @@ void uarchsim_t::step(db_t *inst) {
 #define SCALED_UNIT(size)	((size/KILOBYTE >= KILOBYTE) ? "MB" : "KB")
 
 void uarchsim_t::output() {
-   printf("UARCHSIM CONFIGURATION-----------------------------\n");
+   auto get_track_name = [] (uint64_t track){
+      static std::string track_names [] = {
+         "ALL",
+         "LoadsOnly",
+         "LoadsOnlyHitMiss",
+      };
+      //return track_names[static_cast<std::underlying_type<VPTracks>::type>(t)].c_str();
+      return track_names[track].c_str();
+   };
    printf("VP_ENABLE = %d\n", (VP_ENABLE ? 1 : 0));
    printf("VP_PERFECT = %s\n", (VP_ENABLE ? (VP_PERFECT ? "1" : "0") : "n/a"));
+   printf("VP_TRACK = %s\n", (VP_ENABLE ? get_track_name(VP_TRACK) : "n/a"));
    printf("WINDOW_SIZE = %ld\n", WINDOW_SIZE);
    printf("FETCH_WIDTH = %ld\n", FETCH_WIDTH);
    printf("FETCH_NUM_BRANCH = %ld\n", FETCH_NUM_BRANCH);
@@ -332,8 +492,9 @@ void uarchsim_t::output() {
    printf("NUM_ALU_LANES = %ld%s", NUM_ALU_LANES, ((NUM_ALU_LANES > 0) ? "\n" : " (unbounded)\n"));
    //BP.output();
    printf("MEMORY HIERARCHY CONFIGURATION---------------------\n");
-   printf("PERFECT_CACHE = %ld\n", (PERFECT_CACHE ? 1 : 0));
-   printf("WRITE_ALLOCATE = %ld\n", (WRITE_ALLOCATE ? 1 : 0));
+   printf("STRIDE Prefetcher = %s\n", PREFETCHER_ENABLE ? "1" : "0");
+   printf("PERFECT_CACHE = %s\n", (PERFECT_CACHE ? "1" : "0"));
+   printf("WRITE_ALLOCATE = %s\n", (WRITE_ALLOCATE ? "1" : "0"));
    printf("Within-pipeline factors:\n");
    printf("\tAGEN latency = 1 cycle\n");
    printf("\tStore Queue (SQ): SQ size = window size, oracle memory disambiguation, store-load forwarding = 1 cycle after store's or load's agen.\n");
@@ -356,6 +517,7 @@ void uarchsim_t::output() {
    printf("STORE QUEUE MEASUREMENTS---------------------------\n");
    printf("Number of loads: %ld\n", num_load);
    printf("Number of loads that miss in SQ: %ld (%.2f%%)\n", num_load_sqmiss, 100.0*(double)num_load_sqmiss/(double)num_load);
+   printf("Number of PFs issued to the memory system %ld\n", stat_pfs_issued_to_mem);
    printf("MEMORY HIERARCHY MEASUREMENTS----------------------\n");
    if (FETCH_MODEL_ICACHE) {
       printf("I$:\n"); IC.stats();
@@ -367,9 +529,12 @@ void uarchsim_t::output() {
    printf("ILP LIMIT STUDY------------------------------------\n");
    printf("instructions = %ld\n", num_inst);
    printf("cycles       = %ld\n", cycle);
-   printf("IPC          = %.2f\n", ((double)num_inst/(double)cycle));
+   printf("IPC          = %.3f\n", ((double)num_inst/(double)cycle));
+   printf("Prefetcher------------------------------------------\n");
+   prefetcher.print_stats();
    printf("CVP STUDY------------------------------------------\n");
    printf("prediction-eligible instructions = %ld\n", num_eligible);
    printf("correct predictions              = %ld (%.2f%%)\n", num_correct, (100.0*(double)num_correct/(double)num_eligible));
    printf("incorrect predictions            = %ld (%.2f%%)\n", num_incorrect, (100.0*(double)num_incorrect/(double)num_eligible));
+ 
 }

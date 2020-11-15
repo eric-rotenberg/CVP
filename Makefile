@@ -23,21 +23,32 @@
 
 CC = g++
 OPT = -O3
-LIBS = -lz -lcvp
+LIBS = -lcvp -lz
 FLAGS = -std=c++11 -L./lib $(LIBS) $(OPT)
 
 OBJ = mypredictor.o
 DEPS = cvp.h mypredictor.h
 
+DEBUG=0
+ifeq ($(DEBUG), 1)
+	CC += -ggdb3
+endif
+
+
+.PHONY: clean lib
+
 all: cvp
 
-cvp: $(OBJ)
+lib:
+	make -C $@ DEBUG=$(DEBUG)
+
+cvp: $(OBJ) | lib
 	$(CC) $(FLAGS) -o $@ $^
 
 %.o: %.cc $(DEPS)
 	$(CC) $(FLAGS) -c -o $@ $<
 
-.PHONY: clean
 
 clean:
 	rm -f *.o cvp
+	make -C lib clean

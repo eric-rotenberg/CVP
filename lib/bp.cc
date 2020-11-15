@@ -20,7 +20,7 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
 // Author: Eric Rotenberg (ericro@ncsu.edu)
-
+// Modified by A. Seznec (andre.seznec@inria.fr) to include TAGE-SC-L predictor and the ITTAGE indirect branch predictor
 
 #include <stdio.h>
 #include <inttypes.h>
@@ -29,13 +29,15 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "bp.h"
 #include "parameters.h"
 
+#include "parameters.h"
+
 bp_t::bp_t(uint64_t cb_pc_length, uint64_t cb_bhr_length,
 	   uint64_t ib_pc_length, uint64_t ib_bhr_length,
-	   uint64_t ras_size):cb_index(cb_pc_length, cb_bhr_length),
-                              ib_index(ib_pc_length, ib_bhr_length),
-                              ras(ras_size) {
-   cb = new uint64_t[cb_index.table_size()];
-   ib = new uint64_t[ib_index.table_size()];
+	   uint64_t ras_size)
+   /* A. Seznec: introduction of  TAGE-SC-L and ITTAGE*/
+   : TAGESCL(new PREDICTOR())
+   , ITTAGE(new IPREDICTOR())
+   , ras(ras_size) {
 
    // Initialize measurements.
    meas_branch_n = 0;
@@ -58,7 +60,6 @@ bool bp_t::predict(InstClass insn, uint64_t pc, uint64_t next_pc) {
    bool taken;
    bool pred_taken;
    uint64_t pred_target;
-   uint64_t index;
    bool misp;
 
    if (insn == InstClass::condBranchInstClass) {
@@ -67,32 +68,17 @@ bool bp_t::predict(InstClass insn, uint64_t pc, uint64_t next_pc) {
       // Determine the actual taken/not-taken outcome.
       taken = (next_pc != (pc + 4));
 
-      // Get index for conditional branch predictor.
-      index = cb_index.index(pc);
-
       // Make prediction.
-      pred_taken = (cb[index] >= 2);
-
+      pred_taken= TAGESCL->GetPrediction (pc);
+      
       // Determine if mispredicted or not.
       misp = (pred_taken != taken);
-
-      // Update table of conditional branch predictor.
-      if (taken) {
-         if (cb[index] < 3)
-	    cb[index]++;
-      }
-      else {
-         if (cb[index] > 0)
-	    cb[index]--;
-      }
-
-      // Update BHRs of all predictors that have them.
-      cb_index.update_bhr(taken);
-      ib_index.update_bhr(taken);
-
+      
+      /* A. Seznec: uodate TAGE-SC-L*/
+      TAGESCL-> UpdatePredictor (pc , 1,  taken, pred_taken, next_pc);
       // Update measurements.
       meas_branch_n++;
-      if (misp) meas_branch_m++;
+      meas_branch_m += misp;
    }
    else if (insn == InstClass::uncondDirectBranchInstClass) {
       // CALL OR JUMP DIRECT
@@ -101,7 +87,10 @@ bool bp_t::predict(InstClass insn, uint64_t pc, uint64_t next_pc) {
       // or the pre-decode/decode stage (BTB miss), so these are not predicted.
       // Never mispredicted.
       misp = false;
-
+      
+      /* A. Seznec: update branch  histories for TAGE-SC-L and ITTAGE */
+      TAGESCL->TrackOtherInst(pc , 0,  true,next_pc);
+      ITTAGE->TrackOtherInst(pc , next_pc);
 #if 0
       // If the destination register is the link register (x1) or alternate link register (x5),
       // then the instruction is a call instruction by software convention.
@@ -132,28 +121,28 @@ bool bp_t::predict(InstClass insn, uint64_t pc, uint64_t next_pc) {
       else {
          // NOT RETURN
 #endif
-         if (PERFECT_INDIRECT_PRED) {
-	    misp = false;
-            // Update measurements.
-            meas_jumpind_n++;
-         }
-         else {
-            // Get index for indirect branch predictor.
-            index = ib_index.index(pc);
+      if (PERFECT_INDIRECT_PRED) {
+	      misp = false;
+         // Update measurements.
+         meas_jumpind_n++;
+      }
+      else {
+         // Make prediction.
+         pred_target= ITTAGE->GetPrediction (pc);
 
-            // Make prediction.
-            pred_target = ib[index];
+         // Determine if mispredicted or not.
+         misp = (pred_target != next_pc);
+      
+         /* A. Seznec: update ITTAGE*/
+         ITTAGE-> UpdatePredictor (pc , next_pc);
+      
+         // Update measurements.
+         meas_jumpind_n++;
+         meas_jumpind_m += misp;
+      }
 
-            // Determine if mispredicted or not.
-            misp = (pred_target != next_pc);
-
-            // Update table of indirect branch predictor.
-            ib[index] = next_pc;
-
-            // Update measurements.
-            meas_jumpind_n++;
-            if (misp) meas_jumpind_m++;
-         }
+      /* A. Seznec: update history for TAGE-SC-L */
+      TAGESCL->TrackOtherInst(pc , 2,  true,next_pc);
 #if 0
       }
 
@@ -168,7 +157,7 @@ bool bp_t::predict(InstClass insn, uint64_t pc, uint64_t next_pc) {
 
       // Update measurements.
       meas_notctrl_n++;
-      if (misp) meas_notctrl_m++;
+      meas_notctrl_m+=misp;
    }
 
    return(misp);
@@ -193,3 +182,4 @@ void bp_t::output() {
    BP_OUTPUT("Jump: Return     ", meas_jumpret_n, meas_jumpret_m, num_inst);
    BP_OUTPUT("Not control      ", meas_notctrl_n, meas_notctrl_m, num_inst);
 }
+

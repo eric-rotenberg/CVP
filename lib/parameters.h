@@ -21,9 +21,20 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 // Author: Eric Rotenberg (ericro@ncsu.edu)
 
+#ifndef _PARAMETERS_H_
+#define _PARAMETERS_H_
+
+enum class VPTracks
+{
+    ALL  = 0,
+    LoadsOnly,
+    LoadsOnlyHitMiss,
+    NumTracks
+};
 
 extern bool VP_ENABLE;
 extern bool VP_PERFECT;
+extern uint64_t VP_TRACK;
 extern uint64_t WINDOW_SIZE;
 extern uint64_t FETCH_WIDTH;
 extern uint64_t FETCH_NUM_BRANCH;
@@ -37,6 +48,7 @@ extern uint64_t PIPELINE_FILL_LATENCY;
 extern uint64_t NUM_LDST_LANES;
 extern uint64_t NUM_ALU_LANES;
 
+extern bool PREFETCHER_ENABLE;
 extern bool PERFECT_CACHE;
 extern bool WRITE_ALLOCATE;
 
@@ -60,3 +72,5 @@ extern uint64_t L3_BLOCKSIZE;
 extern uint64_t L3_LATENCY;
 
 extern uint64_t MAIN_MEMORY_LATENCY;
+
+#endif

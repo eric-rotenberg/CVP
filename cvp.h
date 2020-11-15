@@ -1,3 +1,4 @@
+#pragma once
 /*
 
 Copyright (c) 2019, North Carolina State University
@@ -48,17 +49,47 @@ enum InstClass : uint8_t
   undefInstClass = 8 
 };
 
+enum class HitMissInfo : uint8_t
+{
+	Miss,
+	L1DHit,
+	L2Hit,
+	L3Hit,
+	Invalid
+};
+
+struct PredictionRequest
+{
+	// Instruction sequence number
+	uint64_t seq_no = -1;
+	// Instruction Program Counter
+	uint64_t pc = 0xdeadbeef;
+	// Instruction piece number (e.g., for SIMD instructions)
+	uint8_t piece = 0;
+	// Is candidate for VP in the current track
+	bool is_candidate = false;
+	// Data Cache hit/miss information
+	HitMissInfo cache_hit = HitMissInfo::Invalid;
+};
+
+struct PredictionResult
+{
+	uint64_t predicted_value = 0x0;
+	bool speculate = false;
+};
 
 //
-// getPrediction()
+// getPrediction(const PredictionRequest& req)
 //
-// Return value:
-// "true" if microarch. simulator should speculate based on the prediction for this instruction.
-// "false" if it should not speculate based on the prediction for this instruction.
+// Return value: PredictionResult
+// .speculate:
+//         "true": if microarch. simulator should speculate based on the prediction for this instruction.
+//         "false": if it should not speculate based on the prediction for this instruction.
+// .predicted_value: The prediction
 // This allows contestants to decide between the potential speedup of speculation vs.
 // the potential penalty of a squash from ROB-head due to misspeculation.
 //
-// Input arguments:
+// Input arguments: PredictionRequest
 // 1. sequence number: the dynamic micro-instruction number
 // 2. program counter (pc) of instruction
 // 3. piece: Some instructions operate on values that are wider than 64 bits.
@@ -66,12 +97,10 @@ enum InstClass : uint8_t
 //           for pieces 0, 1, ..., n, consecutively, for the same instruction.
 //           Note that sequence number is incremented whether for an instruction or piece
 //           of an instruction (hence sequence number is dynamic micro-instruction number).
-//
-// Output argument:
-// 1. predicted value, whether or not the simulator is directed to speculate
-//
-extern
-bool getPrediction(uint64_t seq_no, uint64_t pc, uint8_t piece, uint64_t& predicted_value);
+// 4. is_candidate: Is candidate instruction for the active track (e.g. is_load)
+// 5. cache_hit: is hit in the data cache. valid only for LoadsOnlyHitMiss track
+extern 
+PredictionResult getPrediction(const PredictionRequest& req);
 
 //
 // speculativeUpdate()

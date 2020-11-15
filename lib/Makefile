@@ -25,11 +25,14 @@
 CC = g++
 OPT = -O3
 TOP = ..
-INC = -I$(TOP)
+INC = -I$(TOP) -I$(TOP)/lib
 LIBS =
 DEFINES = -DGZSTREAM_NAMESPACE=gz
 FLAGS = -std=c++11 $(INC) $(LIBS) $(OPT) $(DEFINES)
 
+ifeq ($(DEBUG), 1)
+	CC += -ggdb3
+endif
 
 OBJ = cvp.o parameters.o uarchsim.o cache.o bp.o resource_schedule.o gzstream.o
 DEPS = $(TOP)/cvp.h cvp_trace_reader.h fifo.h parameters.h uarchsim.h cache.h bp.h resource_schedule.h gzstream.h
