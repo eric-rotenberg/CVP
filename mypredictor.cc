@@ -4,6 +4,9 @@
 
 #include "mypredictor.h"
 #include <iostream>
+#include <bitset>
+#include <cassert>
+
 int seq_commit;
 
 
@@ -755,8 +758,136 @@ void
 updatePredictor (uint64_t
 		 seq_no,
 		 uint64_t
-		 actual_addr, uint64_t actual_value, uint64_t actual_latency)
+		 actual_addr, uint64_t actual_value, const mem_data_t & store_data, uint64_t actual_latency)
 {
+  /////////////////////////////////////////////
+  // Example : Maintaining a view of memory
+  if(actual_addr != 0xdeadbeef)
+  {
+	  // DCZVA will zero out a 64B cache line but store data will be invalid.
+	  const bool is_dczva = (store_data.access_size == 64);
+	  // Note : It is also possible for DCZVA to zero-out fewer bytes, but we do not have a good way to determine DCZVA vs. PC relative store.
+	  // Indeed, DCZVA takes no offset so if EA is the value of the base register, it is likely DCZVA, however, this is not a guarantee as PC relative store may have an immediate
+	  // that could cause EA to be equal to the value in the (only) source register.
+
+	  const bool is_load = store_data.is_load;
+	  if(is_dczva)
+	  {
+		  assert(!store_data.is_load);
+		  for(int i = 0; i < store_data.access_size; i++)
+		  {
+			  memory[actual_addr + i] = 0;
+		  }
+	  }
+	  else if(!is_load)
+	  {
+		int valid_elems = (store_data.std_1_lo != 0xdeadbeef) + (store_data.std_1_hi != 0xdeadbeef) + (store_data.std_2_lo != 0xdeadbeef) + (store_data.std_2_hi != 0xdeadbeef);
+		// At the start of simulation store data will be unknown (0xdeadbeef) because the trace does not have
+		// initial register value.
+		if(valid_elems != 0)
+		{
+			int elt_size = store_data.access_size / valid_elems;
+			if(store_data.std_1_lo != 0xdeadbeef)
+			{	
+				int shift = 0;;
+				for(int i = 0; i < elt_size; i++)
+				{
+					memory[actual_addr] = (store_data.std_1_lo >> shift) & 0xFF;
+					shift += 8;
+					actual_addr++;
+				}
+			}
+			if(store_data.std_1_hi != 0xdeadbeef)
+			{
+				int shift = 0;
+				for(int i = 0; i < elt_size; i++)
+				{
+					memory[actual_addr] = (store_data.std_1_hi >> shift) & 0xFF;
+					shift += 8;
+					actual_addr++;
+				}
+			}
+			if(store_data.std_2_lo != 0xdeadbeef)
+			{
+				int shift = 0;
+				for(int i = 0; i < elt_size; i++)
+				{;
+					memory[actual_addr] = (store_data.std_2_lo >> shift) & 0xFF;
+					shift += 8;
+					actual_addr++;
+				}
+			}
+			if(store_data.std_2_hi != 0xdeadbeef)
+			{
+				int shift = 0;
+				for(int i = 0; i < elt_size; i++)
+				{
+					memory[actual_addr] = (store_data.std_2_hi >> shift) & 0xFF;
+					shift += 8;
+					actual_addr++;
+				}
+			}
+		}
+	  }
+	  else
+	  {
+		  uint64_t value = 0x0;
+		  uint64_t init_addr = actual_addr;
+		  std::bitset<32> invalid;
+
+		  int shift = 0;
+		  for(int i = 0; i < store_data.access_size; i++)
+		  {
+			  invalid.set(i, memory.count(actual_addr) == 0);
+			  if(memory.count(actual_addr) == 0)
+			  {
+				invalid.set(i);
+				value |= (0lu << shift);
+			  }
+			  else
+			  {
+				value |= (((uint64_t) memory[actual_addr]) << shift);
+			  }
+			  actual_addr++;
+			  shift += 8;
+		  }
+
+		  // Mismtches comes from :
+		  // Initialization : trace may load from @ without having seen a store to @ (so we will read 0). Note
+		  // that this may also be partial initialization where e.g. 4 bytes have been stored in the trace but
+		  // we are loading 8 bytes. Another possibility is tht the register we stores has never been produced so we stored
+		  // 0 by default. That case will count as a 
+		  // Virtual aliasing/Special ops: values may change arbitrarily due to virtual aliasing. VA aliasing cannot
+		  // be detected in the trace since we are not embedding physical addresses.
+		  // Load does not actually have a value in the trace : prefetches which are classified as loadOp, and some other specific ARM instructions.
+		  if(actual_value != value)
+		  {
+			  // We'll count mismatch as an initialization problem if some of the bytes were not there
+			  bool has_invalid_bytes = invalid.any() || (value == 0);
+
+			  // We'll also update the image if the load value is valid
+			  if(actual_value != 0xdeadbeef)
+			  {
+				for(int i = 0; i < store_data.access_size; i++)
+			  	{
+					memory[init_addr + i] = (actual_value >> (i * 8) & 0xFF);
+				}
+			  }
+
+			  stat_incorrect_mem_tracked_init += (actual_value != 0xdeadbeef) && has_invalid_bytes;
+			  stat_incorrect_mem_tracked_alias += (actual_value != 0xdeadbeef) && !has_invalid_bytes;
+			  stat_incorrect_mem_tracked_ld_no_output += actual_value == 0xdeadbeef;		
+		  }
+		  else
+		  {
+			  stat_correct_mem_tracked++;
+		  }
+		  
+	  }
+  }
+  // End example
+  ///////////////////////
+
   ForUpdate *U;
   U = &Update[seq_no & (MAXINFLIGHT - 1)];
   if (U->todo == 1)
@@ -786,7 +917,7 @@ speculativeUpdate (uint64_t seq_no,	// dynamic micro-instruction # (starts at 0 
 		   uint8_t prediction_result,	// 0: incorrect, 1: correct, 2: unknown (not revealed)
 		   // Note: can assemble local and global branch history using pc, next_pc, and insn.
 		   uint64_t
-		   pc, uint64_t next_pc, InstClass insn, uint8_t piece,
+		   pc, uint64_t next_pc, InstClass insn, uint8_t mem_size, bool is_pair, uint8_t piece,
 		   // Note: up to 3 logical source register specifiers, up to 1 logical destination register specifier.
 		   // 0xdeadbeef means that logical register does not exist.
 		   // May use this information to reconstruct architectural register file state (using log. reg. and value at updatePredictor()).
@@ -850,6 +981,11 @@ beginPredictor (int argc_other, char **argv_other)
 void
 endPredictor ()
 {
+	printf("Correct Mem Tracker: %ld\n", stat_correct_mem_tracked);
+	printf("Incorrect Mem Tracker Init: %ld\n", stat_incorrect_mem_tracked_init);
+	printf("Incorrect Mem Tracker Aliasing/SpecOps: %ld\n", stat_incorrect_mem_tracked_alias);
+	printf("Incorrect Mem Tracker NoLdOutput: %ld\n", stat_incorrect_mem_tracked_ld_no_output);
+
 #ifndef LIMITSTUDY
     int SIZE = 0;
     SIZE = NBWAYSTR * (1 << LOGSTR) * (67 + LOGSTRIDE + TAGWIDTHSTR + WIDTHCONFIDSTR) + 16;	//the SafeStride counter

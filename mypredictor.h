@@ -99,6 +99,10 @@ int HL[NHIST + 1] =
 #define BANKSIZE (1<<LOGBANK)
 #define PREDSIZE (NBBANK*BANKSIZE)
 
+#include <unordered_map>
+
+std::unordered_map<uint64_t, uint8_t> memory;
+
 
 // Global path history
 
@@ -154,6 +158,10 @@ static vtentry Vtage[PREDSIZE];
 static int TICK;		//10 bits // for managing replacement on the VTAGE entries
 static int LastMispVT = 0;	//8 bits //for tracking the last misprediction on VTAGE
 
+uint64_t stat_correct_mem_tracked = 0;
+uint64_t stat_incorrect_mem_tracked_init = 0;
+uint64_t stat_incorrect_mem_tracked_alias = 0;
+uint64_t stat_incorrect_mem_tracked_ld_no_output = 0;
 
  //index function for VTAGE (use the global path history): just a complex hash function
 uint32_t
