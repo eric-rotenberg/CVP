@@ -35,6 +35,8 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "uarchsim.h"
 #include "parameters.h"
 
+std::unordered_map<uint64_t, addr_mode_infer_t> ldst_offsets = {};
+
 //uarchsim_t::uarchsim_t():window(WINDOW_SIZE),
 uarchsim_t::uarchsim_t():BP(20,16,20,16,64),window(WINDOW_SIZE),
 			 L3(L3_SIZE, L3_ASSOC, L3_BLOCKSIZE, L3_LATENCY, (cache_t *)NULL),
@@ -48,6 +50,10 @@ uarchsim_t::uarchsim_t():BP(20,16,20,16,64),window(WINDOW_SIZE),
    // Set this to "spdlog::level::debug" for verbose debug prints
    spdlog::set_level(spdlog::level::info);
    spdlog::set_pattern("[%l]  %v");
+
+   std::fill_n(RV, RFSIZE, 0xdeadbeef);
+   std::fill_n(RV_EL1, RFSIZE, 0xdeadbeef);
+   std::fill_n(RV_hi, RFSIZE, 0xdeadbeef);
 
    ldst_lanes = ((NUM_LDST_LANES > 0) ? (new resource_schedule(NUM_LDST_LANES)) : ((resource_schedule *)NULL));
    alu_lanes = ((NUM_ALU_LANES > 0) ? (new resource_schedule(NUM_ALU_LANES)) : ((resource_schedule *)NULL));
@@ -162,14 +168,15 @@ void uarchsim_t::step(db_t *inst)
    piece = ((inst->pc == prev_pc) ? (piece + 1) : 0);
    prev_pc = inst->pc;
 
- 
    /////////////////////////////
    // Manage window: retire.
    /////////////////////////////
    while (!window.empty() && (fetch_cycle >= window.peekhead().retire_cycle)) {
       window_t w = window.pop();
       if (VP_ENABLE && !VP_PERFECT)
-         updatePredictor(w.seq_no, w.addr, w.value, w.latency);
+      {
+         updatePredictor(w.seq_no, w.addr, w.value, w.mem_data, w.latency);
+      }
    }
  
    // CVP variables
@@ -188,6 +195,174 @@ void uarchsim_t::step(db_t *inst)
    if (FETCH_MODEL_ICACHE)
       fetch_cycle = IC.access(fetch_cycle, true, inst->pc);   // Note: I-cache hit latency is "0" (above), so fetch cycle doesn't increase on hits.
 
+   // Determine store pair vs store single for CVP2 StData update()
+   // It will have to be our best guess since the trace unfortunately does not provide the information
+   bool is_pair = false;
+   
+   int num_valid_srcs = inst->A.valid + inst->B.valid + inst->C.valid;
+
+   if(inst->is_store && num_valid_srcs == 3)
+   {
+      // 3-input store with same base reg and output reg are store pairs with base register update
+      // Exception is store pair exclusive (who will not do a base register update) but those are still pair so that's ok
+      if(inst->D.valid && inst->D.log_reg == inst->A.log_reg)
+      {
+         is_pair = true;
+         // Store pair has 2x element size
+         inst->size *= 2;
+      }
+      // Do our best guess of finding out single vs pair
+      else
+      {  
+         uint64_t base_reg_value = (inst->is_kernel && (inst->A.log_reg == StackPointer)) ? RV_EL1[inst->A.log_reg] : RV[inst->A.log_reg];
+         const int64_t offset = inst->addr - base_reg_value;
+
+         uint64_t extend = RV[inst->C.log_reg];
+         if(extend >> 31)
+         {
+            extend |= 0xFFFFFFFF00000000;
+         }
+
+         // Arm manual : "A register offset means that the offset is the 64 bits from a general-purpose register, Xm, optionally scaled
+         // by the transfer size"
+         const bool scaled = inst->addr == (base_reg_value + (RV[inst->C.log_reg] * inst->size));
+         const bool unscaled = inst->addr == (base_reg_value + RV[inst->C.log_reg]);
+
+         // Arm manual : "An extended register offset means that offset is the bottom 32 bits from a general-purpose register Wm,
+         // sign-extended or zero-extended to 64 bits, and then scaled by the transfer size if so indicated"
+         const bool xscaled = inst->addr == (base_reg_value + (extend * inst->size));
+         const bool xunscaled = inst->addr == (base_reg_value + extend );
+         
+         if(ldst_offsets.count(inst->pc) == 0)
+         {
+            // Offset reg if any is C
+            ldst_offsets[inst->pc] = {offset, RV[inst->C.log_reg], NoMode};   
+               
+            // This is our best guess for now, but we might misclassify if RV[inst->C.log_reg] has the "correct" value by coincidence.
+            is_pair = !scaled && !unscaled && !xscaled && !xunscaled;
+
+            if(is_pair)
+            {
+               // Store pair has 2x element size
+               inst->size *= 2;
+            }
+            ldst_offsets[inst->pc].is_pair = is_pair;
+         }
+         else if(ldst_offsets[inst->pc].mode == ImmOffset)
+         {
+            const bool offset_differs = ldst_offsets[inst->pc].actual_offset != offset;
+         
+            // If it is a store pair and the offset differs, it might be because we are tracking incorrect values
+            // for SP accross EL changes (in ARMv8 SP is tied to the EL)
+            if(offset_differs)
+            {
+               // This is our best guess for now, but we might misclassify if RV[inst->C.log_reg] has the "correct" value by coincidence.
+               is_pair = !scaled && !unscaled && !xscaled && !xunscaled;
+
+               if(!is_pair)
+               {
+                  stat_misclassified_str_to_stp += ldst_offsets[inst->pc].count;
+                  ldst_offsets[inst->pc] = {offset, RV[inst->C.log_reg], RegOffset};   
+                  ldst_offsets[inst->pc].is_pair = is_pair = false;
+               }
+            }
+            else
+            {
+               inst->size *= 2;
+               is_pair = true; 
+               ldst_offsets[inst->pc].count++;
+            }
+         }
+         else
+         {  
+            const bool offset_differs = ldst_offsets[inst->pc].actual_offset != offset;
+            const bool offset_reg_differs = ldst_offsets[inst->pc].reg_offset != RV[inst->C.log_reg];
+
+            const bool reg_offset_is_0 = (offset != 0 && RV[inst->C.log_reg] == 0);
+            const bool reg_offset_differs_too_much = (offset != RV[inst->C.log_reg]) && (offset != (RV[inst->C.log_reg] * inst->size)) &&
+               (offset != extend) && (offset != (extend * inst->size));
+
+            const bool reg_offset_cannot_be_offset = reg_offset_is_0 || reg_offset_differs_too_much;
+
+            if((offset_reg_differs || reg_offset_cannot_be_offset) && !offset_differs)
+            {
+               ldst_offsets[inst->pc].is_pair = is_pair = true;
+               // Store pair has 2x element size
+               inst->size *= 2;
+
+               if(ldst_offsets[inst->pc].mode == RegOffset)
+               {
+                  stat_long_store_pair_misclassify += ldst_offsets[inst->pc].count;
+                  ldst_offsets[inst->pc].count = 0;
+               }
+
+               if(ldst_offsets[inst->pc].mode == NoMode)
+               {
+                  stat_short_store_pair_misclassify += ldst_offsets[inst->pc].count;
+                  ldst_offsets[inst->pc].count = 0;
+               }
+
+               ldst_offsets[inst->pc].mode = ImmOffset;
+            }
+            else if(!offset_differs && !offset_reg_differs && !reg_offset_cannot_be_offset)
+            {    
+               if(ldst_offsets[inst->pc].mode != RegOffset)
+               {
+                  stat_misclassified_str_to_stp += (ldst_offsets[inst->pc].is_pair ? ldst_offsets[inst->pc].count : 0);
+                  ldst_offsets[inst->pc].count = 0;
+               }
+                  
+               ldst_offsets[inst->pc].mode = RegOffset;      
+               ldst_offsets[inst->pc].is_pair = is_pair = false;
+            }
+
+            ldst_offsets[inst->pc].count++;
+            ldst_offsets[inst->pc].actual_offset = offset;
+            ldst_offsets[inst->pc].reg_offset = RV[inst->C.log_reg];
+         }
+      }
+   }
+
+   // Counting lower bound of misclassified load pairs
+   // Note that load with three outputs are guaranteed to be base update so we don't need to check.
+   if(!inst->is_store && inst->is_base_update && !inst->is_guaranteed_base_update)
+   {
+      assert(inst->size);
+      uint64_t base_reg_value = (inst->is_kernel && (inst->A.log_reg == StackPointer)) ? RV_EL1[inst->A.log_reg] : RV[inst->A.log_reg];
+      const int64_t offset = inst->D.value - base_reg_value;
+
+      // Best effort here, we might get it wrong
+      const bool offset_too_large = base_reg_value != 0xdeadbeef && (offset < -512 || offset > 504);
+  
+      // Only register the offset if the base register value is valid (we're not at the start of the trace)
+      // Otherwise we'll miscategorize the base update forever
+      if(base_reg_value != 0xdeadbeef)
+      {
+         if(ldst_offsets.count(inst->pc) == 0)
+         {
+            if(offset_too_large)
+            {
+               stat_misclassified_ldp++;
+               ldst_offsets[inst->pc] = {offset, 0, ImmOffset};  
+            }
+            else
+            {
+               ldst_offsets[inst->pc] = {offset, 0, NoMode};  
+            }
+         }
+         else
+         {   
+            if(offset_too_large || (offset != ldst_offsets[inst->pc].actual_offset))
+            {
+               stat_misclassified_ldp += ldst_offsets[inst->pc].count;
+               ldst_offsets[inst->pc].count = 0;
+               ldst_offsets[inst->pc].mode = ImmOffset;
+            }
+            ldst_offsets[inst->pc].count++;
+         }
+      }
+   } 
+
    // Predict at fetch time
    if (VP_ENABLE)
    {
@@ -203,7 +378,7 @@ void uarchsim_t::step(db_t *inst)
          PredictionRequest req = get_prediction_req_for_track(fetch_cycle, seq_no, piece, inst);
          pred = getPrediction(req);
          speculativeUpdate(seq_no, predictable, ((predictable && pred.speculate && req.is_candidate) ? ((pred.predicted_value == inst->D.value) ? 1 : 0) : 2),
-                           inst->pc, inst->next_pc, (InstClass)inst->insn, piece,
+                           inst->pc, inst->next_pc, (InstClass)inst->insn, inst->size, is_pair, piece,
                            (inst->A.valid ? inst->A.log_reg : 0xDEADBEEF),
                            (inst->B.valid ? inst->B.log_reg : 0xDEADBEEF),
                            (inst->C.valid ? inst->C.log_reg : 0xDEADBEEF),
@@ -230,6 +405,35 @@ void uarchsim_t::step(db_t *inst)
    if (inst->C.valid) {
       assert(inst->C.log_reg < RFSIZE);
       exec_cycle = MAX(exec_cycle, RF[inst->C.log_reg]);
+   }
+
+   if(inst->D.valid && inst->D.log_reg != RFFLAGS)
+   {
+      if(processing_vec_register)
+      {
+         RV_hi[inst->D.log_reg] = inst->D.value;
+         processing_vec_register = false;
+      }
+      else
+      {
+         if(inst->D.log_reg == StackPointer)
+         {
+            if(inst->is_kernel)
+            {
+               RV_EL1[inst->D.log_reg] = inst->D.value;
+            }
+            else
+            {
+               RV[inst->D.log_reg] = inst->D.value;
+            }
+            
+         }
+         else
+         {
+            RV[inst->D.log_reg] = inst->D.value;
+            processing_vec_register = !inst->ignore_hi_lane && inst->D.log_reg >= Offset::vecOffset;
+         }
+      }
    }
 
    //
@@ -362,7 +566,7 @@ void uarchsim_t::step(db_t *inst)
          squash = (pred.speculate && (pred.predicted_value != inst->D.value));         
          RF[inst->D.log_reg] = ((pred.speculate && (pred.predicted_value == inst->D.value)) ? fetch_cycle : exec_cycle);
       }
-   }
+   } 
 
    // Update SQ byte timestamps.
    if (inst->is_store) {
@@ -388,10 +592,54 @@ void uarchsim_t::step(db_t *inst)
    /////////////////////////////
    // Manage window: dispatch.
    /////////////////////////////
+
+   mem_data_t mdata;
+   mdata.access_size = inst->size;
+   mdata.is_pair = is_pair;
+   mdata.is_load = inst->is_load && !inst->is_base_update;
+      
+   if(inst->is_store)
+   {
+      if(is_pair)
+      {
+         mdata.std_1_lo = RV[inst->B.log_reg];
+         mdata.std_2_lo = RV[inst->C.log_reg];
+
+         if(inst->B.log_reg >= Offset::vecOffset && inst->size > 16)
+         {
+            mdata.std_1_hi = RV_hi[inst->B.log_reg];
+         }
+         if(inst->C.log_reg >= Offset::vecOffset && inst->size > 16)
+         {
+            mdata.std_2_hi = RV_hi[inst->C.log_reg];
+         }
+      }
+      else
+      {
+         // PC Rel will have single source 
+         // B is always the input reg (C is offset)
+         assert(inst->A.valid);
+         const auto reg_id = !inst->B.valid ? inst->A.log_reg : inst->B.log_reg;
+         if(reg_id == StackPointer && inst->is_kernel)
+         {
+              mdata.std_1_lo = RV_EL1[reg_id];
+         }
+         else
+         {
+            mdata.std_1_lo = RV[reg_id];
+            if(reg_id >= Offset::vecOffset && inst->size > 8)
+            {
+               mdata.std_1_hi = RV_hi[reg_id];
+            }
+         }
+      }  
+   }
+
    window.push({MAX(exec_cycle, (window.empty() ? 0 : window.peektail().retire_cycle)),
                seq_no,
                ((inst->is_load || inst->is_store) ? inst->addr : 0xDEADBEEF),
-               ((inst->D.valid && (inst->D.log_reg != RFFLAGS)) ? inst->D.value : 0xDEADBEEF),
+               (inst->D.valid && (inst->D.log_reg != RFFLAGS)) ? inst->D.value : 0xDEADBEEF,
+               mdata,
 	       latency});
 
    /////////////////////////////
@@ -536,5 +784,10 @@ void uarchsim_t::output() {
    printf("prediction-eligible instructions = %ld\n", num_eligible);
    printf("correct predictions              = %ld (%.2f%%)\n", num_correct, (100.0*(double)num_correct/(double)num_eligible));
    printf("incorrect predictions            = %ld (%.2f%%)\n", num_incorrect, (100.0*(double)num_incorrect/(double)num_eligible));
+   printf("Other------------------------------------------\n");
+   printf("Misclassified LDP to LD + BU: %ld\n", stat_misclassified_ldp);
+   printf("Misclassified STP to STR (once, total): %ld\n", stat_short_store_pair_misclassify);
+   printf("Misclassified STP to STR (multiple times, total): %ld\n", stat_long_store_pair_misclassify);
+   printf("Misclassified STR to STP (once times, total): %ld\n", stat_misclassified_str_to_stp);
  
 }

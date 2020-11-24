@@ -78,6 +78,19 @@ struct PredictionResult
 	bool speculate = false;
 };
 
+struct mem_data_t
+{
+	bool is_load = false;
+	// For stores
+	uint64_t std_1_lo = 0xdeadbeef;
+	uint64_t std_1_hi = 0xdeadbeef;
+	uint64_t std_2_lo = 0xdeadbeef;
+	uint64_t std_2_hi = 0xdeadbeef;
+	bool is_pair = false;
+	// For stores and loads
+	int access_size = 0;
+};
+
 //
 // getPrediction(const PredictionRequest& req)
 //
@@ -130,6 +143,8 @@ void speculativeUpdate(uint64_t seq_no,    		// dynamic micro-instruction # (sta
 		       uint64_t pc,			
 		       uint64_t next_pc,
 		       InstClass insn,
+			   uint8_t mem_size,
+			   bool is_pair, // Valid only for stores
 		       uint8_t piece,
 		       // Note: up to 3 logical source register specifiers, up to 1 logical destination register specifier.
 		       // 0xdeadbeef means that logical register does not exist.
@@ -153,7 +168,8 @@ void speculativeUpdate(uint64_t seq_no,    		// dynamic micro-instruction # (sta
 extern
 void updatePredictor(uint64_t seq_no,		// dynamic micro-instruction #
 		     uint64_t actual_addr,	// load or store address (0xdeadbeef if not a load or store instruction)
-		     uint64_t actual_value,	// value of destination register (0xdeadbeef if instr. is not eligible for value prediction)
+		     uint64_t actual_value,	// value of destination register (0xdeadbeef if instr. is not eligible for value prediction)/first StData register
+			 const mem_data_t & st_data, // store data if any
 		     uint64_t actual_latency);	// actual execution latency of instruction
 
 //

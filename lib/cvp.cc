@@ -281,4 +281,5 @@ int main(int argc, char ** argv)
 
   endPredictor();
   sim->output();
+  printf("Misclassify load vector lane: %lu\n", reader.stat_wrongly_ignored_vec_hi);
 }

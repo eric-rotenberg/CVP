@@ -59,10 +59,17 @@ For ease of use, gzstream.h and gzstream.C are provided with minor modifications
 //   If INT (0 to 31) or FLAG (64) 	- 8 bytes each
 //   If SIMD (32 to 63)			- 16 bytes each
 
+#ifndef __CVP_LIB_CVP_TRACE_READER_HH__
+#define __CVP_LIB_CVP_TRACE_READER_HH__
+
 #include <fstream>
 #include <iostream>
 #include <vector>
 #include <cassert>
+#include <bitset>
+#include <algorithm>
+#include <unordered_map>
+
 #include "./gzstream.h"
 
 #if 0
@@ -79,6 +86,43 @@ enum InstClass : uint8_t
   undefInstClass = 8
 };
 #endif
+
+#define NoMode 0
+#define ImmOffset 1
+#define RegOffset 2
+#define BaseUpdate 3
+#define StackPointer 31
+
+struct addr_mode_infer_t
+{
+  int64_t actual_offset = 0;
+  uint64_t reg_offset = 0;
+  uint64_t count = 1;
+  uint8_t mode = NoMode;
+  // Only valid for stores
+  bool is_pair = false;
+
+  addr_mode_infer_t(int64_t offset, uint64_t reg, uint8_t md)
+  : actual_offset(offset)
+  , reg_offset(reg)
+  , count(1)
+  , mode(md)
+  , is_pair(false)
+  {
+  }
+
+  addr_mode_infer_t()
+  : actual_offset(0)
+  , reg_offset(0)
+  , count(1)
+  , mode(NoMode)
+  , is_pair(false)
+  {
+  }
+};
+
+// This is a cache to help us refine our addressing mode/ pair vs single detection
+extern std::unordered_map<uint64_t, addr_mode_infer_t> ldst_offsets;
 
 // This structure is used by CVP1's simulator.
 // Adapt for your own needs.
@@ -110,6 +154,11 @@ struct db_t
 
   bool is_load;
   bool is_store;
+  bool is_base_update;
+  bool is_guaranteed_base_update;
+  bool ignore_hi_lane;
+  bool is_kernel;
+
   uint64_t addr;
   uint64_t size;
 
@@ -117,10 +166,10 @@ struct db_t
   {
     static constexpr const char * cInfo[] = {"aluOp", "loadOp", "stOp", "condBrOp", "uncondDirBrOp", "uncondIndBrOp", "fpOp", "slowAluOp" };
 
-    std::cout << "[PC: 0x" << std::hex << pc <<std::dec << " type: "  << cInfo[insn];
+    std::cout << "[PC: 0x" << std::hex << pc <<std::dec << " type: "  << cInfo[insn] << " ld: " << is_load << " st: " << is_store << " bu: " << is_base_update << "ign_hi_vec:" << ignore_hi_lane;
       if(insn == InstClass::loadInstClass || insn == InstClass::storeInstClass)
       {
-        assert(is_load || is_store);
+        assert(is_load || is_store || is_base_update);
         std::cout << " ea: 0x" << std::hex << addr << std::dec << " size: " << size;
       }
       if(insn == InstClass::condBranchInstClass || insn == InstClass::uncondDirectBranchInstClass || insn == InstClass::uncondIndirectBranchInstClass)
@@ -176,6 +225,8 @@ struct CVPTraceReader
     uint64_t mPc;
     uint8_t mType; // Type is InstClass
     bool mTaken;
+    bool mBaseUpdate;
+
     uint64_t mTarget;
     uint64_t mEffAddr;
     uint8_t mMemSize; // In bytes
@@ -185,6 +236,12 @@ struct CVPTraceReader
     std::vector<uint8_t> mOutRegs;
     std::vector<uint64_t> mOutRegsValues;
 
+    // Used to ignore hi-lane in vector load during cracking.
+    // Ultimately prevents writing in the wrong VRF hi/lo lane
+    // Non-load may still write garbage in hi lane but that will not prevent consistent
+    // load/store data as stores will only pick up the correct lane(s)
+    std::bitset<32> mIgnoreVec;
+    
     Instr()
     {
       reset();
@@ -197,10 +254,12 @@ struct CVPTraceReader
       mMemSize = 0;
       mType = undefInstClass;
       mTaken = false;
+      mBaseUpdate = false;
       mNumInRegs = mNumOutRegs = 0;
       mInRegs.clear();
       mOutRegs.clear();
       mOutRegsValues.clear();
+      mIgnoreVec.reset();
     }
 
     void printInstr()
@@ -269,6 +328,9 @@ struct CVPTraceReader
   // If it is odd, it means that it will contain the high order bits of the SIMD register.
   uint8_t start_fp_reg;
 
+  // To gauge the number of time we see "load 8B into hi lane of 16B vector reg"
+  uint64_t stat_wrongly_ignored_vec_hi = 0;
+  
   // Note that there is no check for trace existence, so modify to suit your needs.
   CVPTraceReader(const char * trace_name)
   {
@@ -313,9 +375,42 @@ struct CVPTraceReader
   {
      db_t * inst = new db_t();
 
-     inst->insn = mInstr.mType;
+     if(mInstr.mType == InstClass::loadInstClass && mCrackRegIdx == 0 && mInstr.mBaseUpdate)
+     {
+        // The base update part of loads is ALU and should see 1-cycle latency.
+        inst->insn = InstClass::aluInstClass;
+        inst->addr = mInstr.mEffAddr;
+        // Keep element size for validation purpose
+        inst->size = std::max(1, mInstr.mMemSize / mSizeFactor);
+        inst->is_base_update = true;
+        // SP cannot be loaded through regular load in ARMv8
+        inst->is_guaranteed_base_update = (mInstr.mNumOutRegs == 3) || (mInstr.mOutRegs[0] == StackPointer);
+     }
+     else if(mInstr.mType == InstClass::storeInstClass && mInstr.mBaseUpdate)
+     {
+        inst->insn = mInstr.mType;
+        inst->size = std::max(1, mInstr.mMemSize / mSizeFactor);
+        inst->addr = mInstr.mEffAddr + ((mSizeFactor - mRemainingPieces) * inst->size);
+        inst->is_base_update = true;
+        inst->is_guaranteed_base_update =  false;
+     }
+     else
+     {
+        inst->insn = mInstr.mType;
+        inst->size = std::max(1, mInstr.mMemSize / mSizeFactor);
+        inst->addr = mInstr.mEffAddr + ((mSizeFactor - mRemainingPieces) * inst->size);
+        inst->is_base_update = false;
+        inst->is_guaranteed_base_update = false;
+     }
+
+     // Note
+     // Store pair size will be amended (x2) when we determine it is a store pair in uarchsim.cc
+     
      inst->pc = mInstr.mPc;
      inst->next_pc = mInstr.mTarget;
+     inst->ignore_hi_lane = false;
+     // We'll approximate kernel code this way
+     inst->is_kernel = inst->pc & 0x8000000000000000;
 
      if(mInstr.mNumInRegs >= 1)
      {
@@ -369,9 +464,9 @@ struct CVPTraceReader
        start_fp_reg = 0;
      }
 
-     inst->is_load = mInstr.mType == InstClass::loadInstClass;
+     inst->is_load = mInstr.mType == InstClass::loadInstClass && !inst->is_base_update;
+     // Stores have only one piece, so mark it correctly as storeInstClass even if the store is base update
      inst->is_store = mInstr.mType == InstClass::storeInstClass;
-     inst->addr = mInstr.mEffAddr + ((mSizeFactor - mRemainingPieces) * 4);
      inst->size = std::max(1, mInstr.mMemSize / mSizeFactor);
 
      assert(inst->size || !(inst->is_load || inst->is_store));
@@ -383,11 +478,16 @@ struct CVPTraceReader
      // If there are more output registers to be processed and they are SIMD
      if(mInstr.mNumOutRegs > mCrackRegIdx && mInstr.mOutRegs.at(mCrackRegIdx) >= Offset::vecOffset && mInstr.mOutRegs[mCrackRegIdx] != Offset::ccOffset)
      {
-       // Next output value is in the next 64-bit lane
-       mCrackValIdx++;
-       // If we processed the high-order bits of the current SIMD register, the next output is a different register
-       if(start_fp_reg % 2 == 0)
+      // Next output value is in the next 64-bit lane
+      mCrackValIdx++;
+      inst->ignore_hi_lane = mInstr.mIgnoreVec.test(mCrackValIdx);
+      
+      // If we processed the high-order bits of the current SIMD register, the next output is a different register
+      if(start_fp_reg % 2 == 0 || mInstr.mIgnoreVec.test(mCrackValIdx))
         mCrackRegIdx++;
+
+      // Ignoring the hi lane of vector if we are only doing one lane op
+      mCrackValIdx += mInstr.mIgnoreVec.test(mCrackValIdx);
      }
      // If there are more output INT registers, go to next value and next register name
      else
@@ -462,30 +562,83 @@ struct CVPTraceReader
 
     mRemainingPieces = std::max(mRemainingPieces, mInstr.mNumOutRegs);
 
+    const bool is_store = mInstr.mType == InstClass::storeInstClass;
+    const bool is_load = mInstr.mType == InstClass::loadInstClass;
+    
+    // This will misclassify ldp x, y, [x] or ldp x, y, [y] but the count is marginal
+    const bool load_is_not_bu = (ldst_offsets.count(mInstr.mPc) != 0) && (ldst_offsets[mInstr.mPc].mode == ImmOffset);
+    const bool is_potential_base_update = is_store || (is_load && (mInstr.mNumOutRegs > 1) && !load_is_not_bu) || (is_load && mInstr.mNumOutRegs == 3);
+
     for(auto i = 0; i != mInstr.mNumOutRegs; i++)
     {
       uint8_t outReg;
       dpressed_input->read((char*) &outReg, sizeof(outReg));
       mInstr.mOutRegs.push_back(outReg);
+
+      mInstr.mBaseUpdate |= is_potential_base_update &&
+        (std::find(mInstr.mInRegs.begin(),  mInstr.mInRegs.end(), outReg) !=  mInstr.mInRegs.end());
     }
 
+    bool vec_output = false;
     for(auto i = 0; i != mInstr.mNumOutRegs; i++)
     {
       uint64_t val;
       dpressed_input->read((char*) &val, sizeof(val));
       mInstr.mOutRegsValues.push_back(val);
+
+      // Don't emit pieces for vector loads that only look at lo part of registers
       if(mInstr.mOutRegs[i] >= Offset::vecOffset && mInstr.mOutRegs[i] != Offset::ccOffset)
       {
+        vec_output = true;
         dpressed_input->read((char*) &val, sizeof(val));
         mInstr.mOutRegsValues.push_back(val);
-        if(val != 0)
+
+        const bool is_load = mInstr.mType == InstClass::loadInstClass;
+        const bool multi_lane = (is_load && mInstr.mMemSize > 8) || !is_load;
+        
+        // If load size says we are only doing a single vec lane load, ignore second piece
+        if(multi_lane)
+        {
           mRemainingPieces++;
+        }
+        else 
+        {
+          mInstr.mIgnoreVec.set(mInstr.mOutRegsValues.size() - 1);
+          stat_wrongly_ignored_vec_hi += val != 0;
+        }
       }
     }
 
+
+
+    // Rearrange output regs for vector loads such that base register is first if 
+    // base update
+    if(vec_output && mInstr.mNumOutRegs > 1 && mInstr.mOutRegs.back() < Offset::vecOffset)
+    {
+      auto tmp_reg = mInstr.mOutRegs.back();
+      auto tmp_value = mInstr.mOutRegsValues.back();
+
+      for(int i = mInstr.mOutRegs.size() - 1; i >= 0; i--)
+      {
+        mInstr.mOutRegs[i+1] = mInstr.mOutRegs[i];
+      }
+      mInstr.mOutRegs[0] = tmp_reg;
+
+      for(int i = mInstr.mOutRegsValues.size() - 1; i >= 0; i--)
+      {
+         mInstr.mOutRegsValues[i+1] = mInstr.mOutRegsValues[i];
+      }
+      mInstr.mOutRegsValues[0] = tmp_value;
+    }
+    
     // Memsize has to be adjusted as it is giving only the access size for one register.
-    mInstr.mMemSize = mInstr.mMemSize * std::max(1lu, (long unsigned) mInstr.mNumOutRegs);
-    mSizeFactor = mRemainingPieces;
+    if(mInstr.mType == InstClass::loadInstClass)
+    {
+      // Disregard base update output as it is not accessing memory
+      mInstr.mMemSize = mInstr.mMemSize * std::max(1lu, (long unsigned) mInstr.mNumOutRegs - mInstr.mBaseUpdate);
+    }
+
+    mSizeFactor = std::max(1, mRemainingPieces - mInstr.mBaseUpdate);
 
     // Trace INT instructions with 0 outputs are generally CMP, so we mark them as producing the flag register
     // The trace does not have the value of the flag register, though
@@ -500,7 +653,6 @@ struct CVPTraceReader
       mInstr.mInRegs.push_back(Offset::ccOffset);
       mInstr.mNumInRegs++;
     }
-
     nInstr++;
 
     if(nInstr % 100000 == 0)
@@ -510,4 +662,4 @@ struct CVPTraceReader
   }
 };
 
-
+#endif

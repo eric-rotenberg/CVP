@@ -1,5 +1,41 @@
 # CVP Infrastructure
 
+## CVP2v2 Changelog
+
+**Preamble:** There have been many changes to the infrastructure to provide correct store data to contestants. However, the traces were initially generated with as little information as possible to fit Qualcomm's requirements for publishing the traces, and therefore some information has to be inferred in a best effort fashion. Specifically, store data is not guaranteed to be correct, even if it is correct the vast majority of the time. Similar for load addressing mode and store single vs. pair.
+
+- Infer store pair vs. store single to provide the correct store data to the updatePredictor() API. Notably, the trace does not contain addressing mode information and it is not obvious whether store A, B, C is the instruction stp A, B, [C] (or other addressing modes using a single register) or str A, [B + C] (or other similar addressing modes using two registers). **Best effort**.
+- Infer exception level as the stack pointer is not the same based on the exception level, and some traces switch between EL0 and EL1 quite often. **Best effort**.
+- Infer base register update for loads :
+  - Better reflects true performance as base register update would see the latency of the load while it is an ALU operation. Therefore, tight loops with base register update operation could run much slower than they should have. The base register update piece is of type **aluOp**.
+  - Better reflects memory footprint as base register update would access and modify the cache state while base register update does not involve the memory hierarchy. For instance, a load pair with base update from address X would be cracked into three pieces and load 8 bytes in each, from X, X + 8 and X + 16, which is wrong as the instruction does not load from X + 16 .. X + 23.
+  - **Best effort** : 
+    - ldp A, B, [A] may be miscategorized as load B, [A] with base register update if the output value of A matches the offset between the input value of A and the effective address (which would be an immediate offset that is not embedded in the trace) by coincidence.
+	- Another limitation is that for post-indexed with base register update addressing mode, the load piece(s) of the load instruction do not depend on the base register update piece of the instruction. However, in the current infrastructure, this false dependency is present (although it is unlikely to have significant impact as loads with base register update within loops will still be fully pipelined). This may be improved in a subsequent version by attempting to infer post- vs. pre- indexing via the base register value and the effective address.
+- Provide Store Data, access size and store single/pair information to the updatePredictor() API
+- Provide access size and store single/pair information to the speculativeUpdate() API
+- [mypredictor.cc](./mypredictor.cc) provides an example implementation of a memory tracker that builds an image of memory from store data information passed to updatePredictor() and counts mismatches. Also note the consideration of ARM's DCZVA (Data Cache zero-out cache line by VA). Mismatches are due to  :
+  - Uninitialized memory (the trace does not provide the state of memory at the start of the trace)
+  - Virtual aliasing (memory does not provide physical address or any other information that can help with virtual dealiasing). This is especially visible in server-class traces that heavily involve the system.
+  - Specific ARM instructions/idioms that modify memory without providing the trace with enough information to determine what memory was touched.
+  - Instruction miscategorization (store pair vs. store single) and exception level change miscategorization (the wrong SP value may be stored to memory)
+- Assume vector instructions always operate on both lanes. This is pessimistic from the point of view of the CVP2 infrastructure as it will generate more instructions as there is one piece for the lo lane and one piece for the hi lane of 128-bit vector operations. This was done to avoid missing some output data as the heuristic to determine hi/lo vs lo only was that the output of the hi part was 0, which is reasonable but occasionally incorrect. The consequence is an increased instruction count vs. CVP2v1 (e.g., compute_fp_9.gz). This may be improved in a subsequent version by tracking actual vector operand size via memory access size in load/store and propagating.
+
+**Conclusions:** Due to the improved address calculation flow (load + base register update case), the speedup brought by VP is likely to decrease as the base register is usually predictable and had a _minimum_ execution latency of 3 cycles in CVPv1, while it has a _maximum_ execution latency of 1 in CVP2v2. However, the base register update is now categorized as **aluOp**, so there is no hidden "low cost" operation behind loadOp in CVP2v2.
+
+
+## CVP1v1 Changelog
+
+- New CVP Tracks (All, LoadsOnly, LoadsOnly + HitMiss Info)
+- TAGE/ITTAGE branch/target predictors (vs. perfect BP in CVP1)
+- Stride prefetcher at L1D (vs. no prefetcher in CVP1)
+- More realistic fetch bandwidth : no fetching past taken branch (vs. fetching past taken in CVP1)
+- Finite number of execution units (vs. infinite in CVP1)
+- Added 128KB 8-way assoc L1I (vs. idealized L1I in CVP1)
+- Increased L1D to 64KB (8-way) (vs. 32KB 4-way in CVP1)
+- Includes CVP1 winner as baseline value predictor (vs. under-performing FCM-based predictor in CVP1)
+- Added spdlog/fmt libraries for printing
+
 ## Examples & Tracks
 
 See Simulator options:
