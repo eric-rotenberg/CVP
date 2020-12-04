@@ -1,11 +1,9 @@
 #pragma once
 
 #include <cassert>
-#include <vector>
 #include <deque>
-#include <map>
+#include <array>
 #include <algorithm>
-#include <optional>
 
 #define DEF_ENUM(ENUM, NAME) _DEF_ENUM(ENUM, NAME)
 #define _DEF_ENUM(ENUM, NAME)                          \
