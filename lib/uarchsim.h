@@ -25,6 +25,8 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "spdlog/fmt/ostr.h"
 #include "cvp.h"
 #include "stride_prefetcher.h"
+#include <map>
+
 using namespace std;
 
 #ifndef _RISCV_UARCHSIM_H
