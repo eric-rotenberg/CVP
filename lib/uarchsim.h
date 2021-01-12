@@ -21,12 +21,12 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 // Author: Eric Rotenberg (ericro@ncsu.edu)
 
-
-#include <map>
 #include "spdlog/spdlog.h"
 #include "spdlog/fmt/ostr.h"
 #include "cvp.h"
 #include "stride_prefetcher.h"
+#include <map>
+
 using namespace std;
 
 #ifndef _RISCV_UARCHSIM_H
@@ -40,6 +40,7 @@ struct window_t {
    uint64_t seq_no;
    uint64_t addr;
    uint64_t value;
+   mem_data_t mem_data;
    uint64_t latency;
 };
 
@@ -56,6 +57,13 @@ class uarchsim_t {
 
       // register timestamps
       uint64_t RF[RFSIZE];
+
+      // Register values
+      uint64_t RV[RFSIZE];
+      uint64_t RV_hi[RFSIZE];
+
+      uint64_t RV_EL1[RFSIZE];
+      bool processing_vec_register = false;
 
       // store queue byte timestamps
       map<uint64_t, store_queue_t> SQ;
@@ -98,6 +106,11 @@ class uarchsim_t {
       uint64_t num_load_sqmiss;
 
       uint64_t stat_pfs_issued_to_mem = 0;
+
+      uint64_t stat_misclassified_ldp = 0;
+      uint64_t stat_long_store_pair_misclassify = 0; 
+      uint64_t stat_short_store_pair_misclassify = 0;
+      uint64_t stat_misclassified_str_to_stp = 0;
 
       // Helper for oracle hit/miss information
       uint64_t get_load_exec_cycle(db_t *inst) const;
